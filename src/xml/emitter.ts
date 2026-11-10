@@ -204,6 +204,26 @@ interface ModelPlan {
   readonly codec: string;
 }
 
+function sameDeclaration(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && sameDeclaration(a[key], b[key]));
+}
+
+function flatSequence(mapping: XmlMapping, groups: unknown): boolean {
+  if (!Array.isArray(groups) || groups.length !== 1) return false;
+  const group = groups[0] as { readonly kind?: unknown; readonly members?: unknown } | null;
+  if (group === null || typeof group !== "object" || group.kind !== "sequence" ||
+      Object.keys(group).some((key) => key !== "kind" && key !== "members")) return false;
+  const elements = mapping.rules.filter((rule) => rule.kind === "element");
+  return elements.length > 0 && sameDeclaration(elements, group.members);
+}
+
 function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: XmlMapping): ModelPlan {
   const refuse = new Refusal(id);
   const extra = mapping as XmlMapping & { readonly [name: string]: unknown };
@@ -218,7 +238,10 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     refuse.raise("invalid_ordered_content", "ordered/mixed mapping without an ordered_content member");
   }
   const writerRefusals: string[] = [];
-  if (extra["sequence"] !== undefined) writerRefusals.push("the sequence compositor is not written by this emitter");
+  const simpleSequence = !tokens && !ordered && !mixed && flatSequence(mapping, extra["sequence"]);
+  if (extra["sequence"] !== undefined && !simpleSequence) {
+    writerRefusals.push("the sequence compositor is not written by this emitter");
+  }
 
   const own = ctx.modelNs(id);
   const attrs = new Map(doc.attributes.map((a) => [a.name, a] as const));
@@ -358,11 +381,15 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       out = nsOut(target.uri, target.prefix);
     }
     if (rule.cdata === true) writerRefusals.push(`rule ${first} is cdata`);
+    // A native sequence of repeated elements maps an omitted rule to an empty
+    // collection. An empty collection emits no occurrences even with render_empty.
+    const repeatedSequence = simpleSequence && collection && policy.nil === "omit" && policy.empty === "as_empty";
+    const absentList = repeatedSequence && spec.default?.present !== true;
     readElems.push(
-      `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, dec: ${dec} },`,
+      `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, dec: ${dec}${absentList ? ", absentList: true" : ""} },`,
     );
     writeElems.push(
-      `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,
+      `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${repeatedSequence ? ", skipEmptyCollection: true" : ""} },`,
     );
   }
 
