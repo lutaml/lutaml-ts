@@ -215,13 +215,24 @@ function sameDeclaration(left: unknown, right: unknown): boolean {
     keys.every((key) => Object.hasOwn(b, key) && sameDeclaration(a[key], b[key]));
 }
 
-function flatSequence(mapping: XmlMapping, groups: unknown): boolean {
-  if (!Array.isArray(groups) || groups.length !== 1) return false;
+function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolean): readonly XmlRule[] | undefined {
+  if (!Array.isArray(groups) || groups.length !== 1) return undefined;
   const group = groups[0] as { readonly kind?: unknown; readonly members?: unknown } | null;
   if (group === null || typeof group !== "object" || group.kind !== "sequence" ||
-      Object.keys(group).some((key) => key !== "kind" && key !== "members")) return false;
+      Object.keys(group).some((key) => key !== "kind" && key !== "members")) return undefined;
+  if (!Array.isArray(group.members) || group.members.length === 0 ||
+      group.members.some((member) => member === null || typeof member !== "object" ||
+        member.kind !== "element" || !Array.isArray(member.name) || typeof member.to !== "string")) return undefined;
+  const members = group.members as XmlRule[];
   const elements = mapping.rules.filter((rule) => rule.kind === "element");
-  return elements.length > 0 && sameDeclaration(elements, group.members);
+  if (elements.length === 0) return [...mapping.rules, ...members];
+  if (sameDeclaration(elements, members)) return mapping.rules;
+  if (!ordered) return undefined;
+  const byMember = new Map(elements.map((rule) => [rule.to, rule] as const));
+  if (members.some((rule) => byMember.has(rule.to) && !sameDeclaration(byMember.get(rule.to), rule))) {
+    return undefined;
+  }
+  return [...mapping.rules, ...members.filter((rule) => !byMember.has(rule.to))];
 }
 
 function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: XmlMapping): ModelPlan {
@@ -238,7 +249,8 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     refuse.raise("invalid_ordered_content", "ordered/mixed mapping without an ordered_content member");
   }
   const writerRefusals: string[] = [];
-  const simpleSequence = !tokens && !ordered && !mixed && flatSequence(mapping, extra["sequence"]);
+  const sequenceRules = flatSequenceRules(mapping, extra["sequence"], tokens);
+  const simpleSequence = sequenceRules !== undefined;
   if (extra["sequence"] !== undefined && !simpleSequence) {
     writerRefusals.push("the sequence compositor is not written by this emitter");
   }
@@ -256,7 +268,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   let contentSeen = false;
   let anyAttribute: string | null = null;
 
-  for (const rule of mapping.rules) {
+  for (const rule of sequenceRules ?? mapping.rules) {
     if (rule.kind === "any_attribute") {
       // map_all_attributes: `{kind, to}` only, one per mapping, a non-collection hash attribute.
       for (const key of Object.keys(rule)) {

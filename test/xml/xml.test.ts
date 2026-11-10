@@ -682,3 +682,22 @@ describe.skipIf(!available)("native OMML flat XML sequence", () => {
     for (const row of corpus.refusals) await expect(codec.parse(row.input)).rejects.toThrow();
   });
 });
+
+describe.skipIf(!available)("ordered XML sequence with standalone rules", () => {
+  it("reads imported sequence members and writes them in token order", { timeout: 30_000 }, async () => {
+    const id = "XmlOracle::Ord@default";
+    const source = oracle.bundle.models[id]!;
+    const xml = source.mappings.xml!;
+    const [first, ...imported] = xml.rules;
+    const mapping = { ...xml, rules: [first!], sequence: [{ kind: "sequence", members: imported }] };
+    const bundle = {
+      ...oracle.bundle,
+      roots: [id],
+      models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } },
+    };
+    const loaded = await load(generateInto(bundle));
+    const codec = loaded["xml"].CODECS[id];
+    const document = "<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>";
+    expect(await codec.stringify(await codec.parse(document))).toBe(document);
+  });
+});
