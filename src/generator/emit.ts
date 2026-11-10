@@ -119,7 +119,7 @@ interface CompiledChoice {
   optionalEmpty: boolean;
   members: ({ attribute: string; collectionMax: number | null; renderEmpty: boolean } | { choice: CompiledChoice })[];
 }
-function compileChoices(doc: ModelDocument, modelId: string): { groups: CompiledChoice[]; names: Set<string> } {
+export function compileChoices(doc: ModelDocument, modelId: string): { groups: CompiledChoice[]; names: Set<string> } {
   const names = new Set<string>();
   const compile = (group: ModelChoiceGroup): CompiledChoice => {
     const members = group.members.map((member) => {

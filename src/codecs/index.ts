@@ -1,3 +1,4 @@
+import { compileChoices } from "../generator/emit.js";
 import { LmlError } from "../contracts.js";
 import type {
   AttributeSpec,
@@ -199,7 +200,7 @@ function elementWire(ctx: Context, attr: AttributeSpec, disc: Discriminator | un
   if (ctx.mapping(type.id) === undefined) {
     return refuse.unsupported(`referenced model ${type.id} has no ${ctx.format} mapping`, attr.name);
   }
-  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "scalar" };
+  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "hash" };
 }
 
 function attributeWire(ctx: Context, doc: ModelDocument, id: ModelId, attr: AttributeSpec, refuse: Refusal): Wire {
@@ -282,12 +283,25 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       `  w.render(out, ${JSON.stringify(first)}, x${access(rule.to)}, ${wire.enc}, ${JSON.stringify(policy.nil)}, ${JSON.stringify(policy.empty)}, ${JSON.stringify(wire.shape)});`,
     );
   }
+  // Ruby key-value ingestion checks empty/missing required collections even
+  // inside a choice. Nonempty choice collections use the source fast path;
+  // their batch counts remain deferred to explicit group validation.
+  const choiceNames = compileChoices(doc, id).names;
+  const eagerChoices = doc.attributes.filter((attribute) => choiceNames.has(attribute.name) && attribute.collection !== false && attribute.collection.min > 0);
+  const eager = eagerChoices.map((attribute) => {
+    const key = wireKeys[attribute.name];
+    if (key === undefined) return "";
+    const value = `model${access(attribute.name)}`;
+    return `  if (!Array.isArray(${value}) || ${value}.length === 0) throw new w.WireError("invalid_document", "required choice collection is empty", ${JSON.stringify("/" + key.replaceAll("~", "~0").replaceAll("/", "~1"))}, m.${cls}.modelId);`;
+  }).filter(Boolean);
   return [
     `export function decode${cls}(v: unknown): m.${cls} {`,
     "  const o = w.object(v);",
     "  const init: Record<string, unknown> = {};",
     ...decode,
-    `  return w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId);`,
+    ...(eager.length === 0 ? [`  return w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId);`] : [
+      `  const model = w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId);`, ...eager, "  return model;",
+    ]),
     "}",
     "",
     `export function encode${cls}(x: m.${cls}): w.Rec {`,
