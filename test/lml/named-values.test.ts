@@ -37,3 +37,43 @@ it.each(corpus.rows)('$id XML/scalar source equality',async(row)=>{
 },30000);
 it.each(corpus.refusals)('$attribute rejects undeclared value',async(row)=>{await assert.rejects(()=>codec.parse(row.input));},30000);
 });
+
+it("lets a trusted binding handle the raw XML spelling separately", async () => {
+  const root = join(out, "bound");
+  const id = "Omml::Models::STBrType@omml";
+  const bindings = { types: { [id]: { module: "./lexical.js", export: "BreakType", xmlLexical: true as const } } };
+  const files = generateModelsWith(bundle, bindings, [createXmlEmitter(options)], options);
+  for (const [name, source] of files) {
+    const file = join(root, name);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, source);
+  }
+  await copyFile(join(out, "contracts-shim.ts"), join(root, "contracts-shim.ts"));
+  await writeFile(join(root, "lexical.ts"), `
+export type BreakType = "page" | "column" | "textWrapping";
+export function isBreakType(value: unknown): value is BreakType {
+  return value === "page" || value === "column" || value === "textWrapping";
+}
+export function parseBreakTypeXml(raw: string): BreakType | null {
+  if (raw === " ") return "page";
+  const value = raw.trim();
+  if (!isBreakType(value)) throw new Error("invalid break type");
+  return value;
+}
+export function formatBreakTypeXml(value: BreakType): string { return value; }
+`);
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify({
+    extends: "../tsconfig.json",
+    compilerOptions: { outDir: "dist" },
+    include: ["./*.ts", "./xml/*.ts"],
+  }));
+  execFileSync(process.execPath, [sdk + "/node_modules/typescript/bin/tsc", "-p", join(root, "tsconfig.json")], { stdio: "pipe" });
+  const installed = await import(pathToFileURL(join(root, "dist/index.js")).href);
+  const bound = installed.xml.CODECS["Omml::Models::CTBr@omml"];
+  const source = corpus.rows.find((row) => row.values.type === "page");
+  assert.ok(source);
+  const model = await bound.parse(source.input.replace('="page"', '=" "'));
+  assert.equal(model.type, "page");
+  assert.equal(stable(await canonicalTree(await bound.stringify(model))), stable(await canonicalTree(source.expected)));
+  await assert.rejects(() => bound.parse(source.input.replace('="page"', '=""')));
+}, 30000);

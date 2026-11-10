@@ -84,9 +84,9 @@ function dependencyPins(bindings: Bindings, version: string, sources: SourceMap)
     sha256: sha256Of(canonicalManifestJson({ name: "lutaml-model-ts", revision: version, runtime })),
   });
   const byModule = new Map<string, { [key: string]: Plain }>();
-  const add = (key: string, binding: { module: string; export: string }): void => {
+  const add = (key: string, binding: { module: string; export: string; xmlLexical?: true }): void => {
     const group = byModule.get(binding.module) ?? {};
-    group[key] = binding.export;
+    group[key] = binding.xmlLexical ? { export: binding.export, xmlLexical: true } : binding.export;
     byModule.set(binding.module, group);
   };
   for (const [id, binding] of Object.entries(bindings.types)) add(`type:${id}`, binding);

@@ -85,7 +85,7 @@ class Context {
   }
 
   bind(binding: TypeBinding): string {
-    const id = binding.module + "\u0000" + binding.export;
+    const id = binding.module + "\u0000" + binding.export + (binding.xmlLexical ? "\u0000xml" : "");
     const known = this.bound.get(id);
     if (known !== undefined) return known.alias;
     const alias = `_b${this.bound.size}`;
@@ -95,7 +95,7 @@ class Context {
 
   importLines(): string[] {
     return [...this.bound.values()].map(({ alias, binding }) => {
-      const e = binding.export;
+      const e = binding.export + (binding.xmlLexical ? "Xml" : "");
       return `import { format${e} as ${alias}_format, parse${e} as ${alias}_parse } from ${q(fromSubdirectory(binding.module))};`;
     });
   }
@@ -138,7 +138,9 @@ function scalarFor(ctx: Context, name: string, refuse: Refusal, attribute: strin
 function boundScalar(ctx: Context, binding: TypeBinding): Scalar {
   const alias = ctx.bind(binding);
   return {
-    dec: `x.orNil((s) => x.dBound(s, ${alias}_parse))`,
+    dec: binding.xmlLexical
+      ? `(s) => x.dBound(s, ${alias}_parse)`
+      : `x.orNil((s) => x.dBound(s, ${alias}_parse))`,
     enc: `(v) => x.eBound(v, ${alias}_format)`,
     textual: false,
   };

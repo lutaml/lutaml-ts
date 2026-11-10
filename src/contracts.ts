@@ -243,6 +243,8 @@ export interface TypeBinding {
   readonly module: string;
   /** Exported TypeScript name. */
   readonly export: string;
+  /** Use parse<Name>Xml and format<Name>Xml for raw XML lexical values. */
+  readonly xmlLexical?: true;
 }
 
 export interface Bindings {
