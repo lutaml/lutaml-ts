@@ -1,4 +1,4 @@
-import type { AttributeSpec, ModelDocument, ModelId } from "../contracts.js";
+import type { AttributeSpec, ModelDocument, ModelId, ModelChoiceGroup } from "../contracts.js";
 import { access, declName, fail } from "./names.js";
 import { planAttribute } from "./plan.js";
 import type { ElementPlan, PlanContext } from "./plan.js";
@@ -67,7 +67,7 @@ function normalized(attr: AttributeSpec): AttributeSpec {
   };
 }
 
-function buildMember(ctx: PlanContext, source: AttributeSpec, modelId: string, location: string): Member {
+function buildMember(ctx: PlanContext, source: AttributeSpec, modelId: string, location: string, choice = false): Member {
   const attr = normalized(source);
   // Any Object.prototype member (toString, valueOf, constructor, __proto__ ...) is refused.
   if (attr.name in Object.prototype) {
@@ -90,7 +90,7 @@ function buildMember(ctx: PlanContext, source: AttributeSpec, modelId: string, l
     : `{ min: ${attr.collection.min}, max: ${attr.collection.max === null ? "null" : attr.collection.max} }`;
   const specLine =
     `rt.attr(out, o, { name: ${JSON.stringify(attr.name)}, required: ${attr.required}, ` +
-    `filled: ${filler !== null}, collection: ${collection}, item: ${plan.check} });`;
+    `filled: ${filler !== null}, collection: ${collection}, item: ${plan.check}${choice ? ", choice: true" : ""} });`;
   const snapshot = attr.collection !== false || plan.check === "rt.neutralObject";
   return { name: attr.name, prop: declName(attr.name), initType, fieldType, omittable, filler, specLine, snapshot };
 }
@@ -112,8 +112,36 @@ function constructorAssign(m: Member, className: string): string {
   return `{ ${read} ${dst} = ${wrap(value)}; }`;
 }
 
-export function emitClass(ctx: PlanContext, className: string, modelId: ModelId, doc: ModelDocument): string {
+interface CompiledChoice {
+  min: number;
+  max: number | null;
+  allowEmpty: boolean;
+  optionalEmpty: boolean;
+  members: ({ attribute: string; collectionMax: number | null; renderEmpty: boolean } | { choice: CompiledChoice })[];
+}
+function compileChoices(doc: ModelDocument, modelId: string): { groups: CompiledChoice[]; names: Set<string> } {
+  const names = new Set<string>();
+  const compile = (group: ModelChoiceGroup): CompiledChoice => {
+    const members = group.members.map((member) => {
+      if ("choice" in member) return {choice: compile(member.choice)};
+      names.add(member.attribute);
+      const attribute = doc.attributes.find((attr) => attr.name === member.attribute);
+      if (!attribute) fail({reason: "dangling_reference", model_id: modelId, attribute: member.attribute});
+      if (attribute.collection !== false && attribute.collection.max === 0) fail({reason: "unsupported_type", model_id: modelId, attribute: member.attribute, detail: "zero-sized choice collection batch validation is not supported"});
+      const rule = group.format === "xml" ? doc.mappings.xml?.rules.find((rule) => rule.kind === "element" && "to" in rule && rule.to === member.attribute) : undefined;
+      const renderEmpty = rule !== undefined && "render" in rule && rule.render?.empty !== undefined && rule.render.empty !== "omit";
+      return {attribute: member.attribute, collectionMax: attribute.collection === false ? null : attribute.collection.max, renderEmpty};
+    });
+    const optionalEmpty = members.some((member) => "choice" in member ? member.choice.optionalEmpty : doc.attributes.some((attr) => attr.name === member.attribute && attr.collection !== false && attr.collection.min === 0));
+    const allowEmpty = group.format === "xml" && doc.mappings.xml !== undefined && members.every((member) => "choice" in member || member.renderEmpty);
+    return {min: group.min, max: group.max, allowEmpty, optionalEmpty, members};
+  };
+  return {groups: doc.choices?.groups.map(compile) ?? [], names};
+}
+
+export function emitClass(ctx: PlanContext, className: string, modelId: ModelId, doc: ModelDocument, withChoices = false): string {
   const members: Member[] = [];
+  const choicePlan = compileChoices(doc, modelId);
   const seen = new Set<string>();
   doc.attributes.forEach((attr, index) => {
     const location = `/models/${modelId}/attributes/${index}`;
@@ -124,7 +152,7 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
       fail({ reason: "duplicate_id", model_id: modelId, attribute: attr.name, location });
     }
     seen.add(attr.name);
-    members.push(buildMember(ctx, attr, modelId, location));
+    members.push(buildMember(ctx, attr, modelId, location, choicePlan.names.has(attr.name)));
   });
   const ordered = doc.ordered_content !== undefined;
   const mandatory = members.some((m) => !m.omittable);
@@ -145,7 +173,7 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   if (ordered) lines.push(`  readonly ${ORDERED_MEMBER}: rt.Maybe<readonly rt.OrderedContentToken[]>;`);
   lines.push("");
   lines.push(`  constructor(init: ${className}Init${mandatory ? "" : " = {}"}) {`);
-  lines.push(`    const problems = ${className}.validate(init);`);
+  lines.push(`    const problems = ${className}.${withChoices ? "validateShape" : "validate"}(init);`);
   lines.push(`    if (problems.length > 0) throw new rt.ValidationError(${className}.modelId, problems);`);
   for (const m of members) lines.push(`    ${constructorAssign(m, className)}`);
   if (ordered) {
@@ -155,12 +183,12 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
     );
   }
   if (filledAny) {
-    lines.push(`    const effective = ${className}.validate(this);`);
+    lines.push(`    const effective = ${className}.${withChoices ? "validateShape" : "validate"}(this);`);
     lines.push(`    if (effective.length > 0) throw new rt.ValidationError(${className}.modelId, effective);`);
   }
   lines.push("    Object.freeze(this);", "  }", "");
   lines.push("  /** Reports every violation of an init-like value without throwing. */");
-  lines.push("  static validate(input: unknown): readonly rt.Violation[] {");
+  lines.push(`  static ${withChoices ? "validateShape" : "validate"}(input: unknown): readonly rt.Violation[] {`);
   lines.push("    const out: rt.Violation[] = [];");
   lines.push("    const o = rt.record(input, out);");
   lines.push("    if (o === null) return out;");
@@ -169,6 +197,23 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   if (ordered) {
     lines.push(`    rt.orderedContent(out, o, ${JSON.stringify(ORDERED_MEMBER)}, ${JSON.stringify(doc.attributes.map((a) => a.name))});`);
   }
-  lines.push("    return out;", "  }", "}", "");
+  lines.push("    return out;", "  }");
+  if (withChoices) {
+    lines.push("  /** Explicit validation includes deferred choices and nested model validation. */");
+    lines.push("  static validate(input: unknown, visiting = new WeakSet<object>()): readonly rt.Violation[] {");
+    lines.push(`    const out = [...${className}.validateShape(input)];`);
+    lines.push("    if (!rt.isRecord(input) || out.length > 0 || visiting.has(input)) return out;");
+    if (filledAny) {
+      lines.push(`    let effective: unknown = input;`);
+      lines.push(`    try { if (!(input instanceof ${className})) effective = new ${className}(input as unknown as ${className}Init); }`);
+      lines.push("    catch (error) { if (error instanceof rt.ValidationError) return error.violations; throw error; }");
+      lines.push("    const value = effective as rt.Rec;");
+    } else lines.push("    const value = input;");
+    lines.push("    visiting.add(input);", "    try {");
+    lines.push(`      rt.nestedChoices(out, value, ${className}.memberNames, MODELS, visiting);`);
+    lines.push(`      rt.choices(out, value, ${JSON.stringify(choicePlan.groups)});`);
+    lines.push("      return out;", "    } finally { visiting.delete(input); }", "  }");
+  }
+  lines.push("}", "");
   return lines.join("\n");
 }

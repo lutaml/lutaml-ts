@@ -120,6 +120,23 @@ export type OrderedContentToken =
     }
   | { readonly kind: "text" | "cdata"; readonly literal: string };
 
+/** Declarative model choices run only on explicit model validation. */
+export interface ModelChoices {
+  readonly version: 1;
+  readonly validation: "explicit";
+  readonly groups: readonly ModelChoiceGroup[];
+}
+export interface ModelChoiceGroup {
+  readonly min: number;
+  readonly max: number | null;
+  /** XML mapping render-empty policies affect presence; null disables them. */
+  readonly format: "xml" | null;
+  readonly members: readonly ModelChoiceMember[];
+}
+export type ModelChoiceMember =
+  | { readonly attribute: string }
+  | { readonly choice: ModelChoiceGroup };
+
 export interface ModelDocument {
   readonly lml: typeof LML_DOCUMENT_VERSION;
   readonly model: string;
@@ -127,6 +144,7 @@ export interface ModelDocument {
   readonly attributes: readonly AttributeSpec[];
   readonly mappings: Mappings;
   readonly ordered_content?: OrderedContentSpec;
+  readonly choices?: ModelChoices;
 }
 
 export interface ValueTypeSpec {
