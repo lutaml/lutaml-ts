@@ -215,7 +215,12 @@ function sameDeclaration(left: unknown, right: unknown): boolean {
     keys.every((key) => Object.hasOwn(b, key) && sameDeclaration(a[key], b[key]));
 }
 
-function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolean): readonly XmlRule[] | undefined {
+interface FlatSequence {
+  readonly rules: readonly XmlRule[];
+  readonly canWrite: boolean;
+}
+
+function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolean): FlatSequence | undefined {
   if (!Array.isArray(groups) || groups.length !== 1) return undefined;
   const group = groups[0] as { readonly kind?: unknown; readonly members?: unknown } | null;
   if (group === null || typeof group !== "object" || group.kind !== "sequence" ||
@@ -225,14 +230,23 @@ function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolea
         member.kind !== "element" || !Array.isArray(member.name) || typeof member.to !== "string")) return undefined;
   const members = group.members as XmlRule[];
   const elements = mapping.rules.filter((rule) => rule.kind === "element");
-  if (elements.length === 0) return [...mapping.rules, ...members];
-  if (sameDeclaration(elements, members)) return mapping.rules;
-  if (!ordered) return undefined;
+  if (elements.length === 0) return { rules: [...mapping.rules, ...members], canWrite: true };
+  if (sameDeclaration(elements, members)) return { rules: mapping.rules, canWrite: true };
   const byMember = new Map(elements.map((rule) => [rule.to, rule] as const));
   if (members.some((rule) => byMember.has(rule.to) && !sameDeclaration(byMember.get(rule.to), rule))) {
     return undefined;
   }
-  return [...mapping.rules, ...members.filter((rule) => !byMember.has(rule.to))];
+  const imported = members.filter((rule) => !byMember.has(rule.to));
+  return { rules: [...mapping.rules, ...imported], canWrite: ordered };
+}
+
+function omittedSequenceRules(rules: readonly XmlRule[], groups: unknown): boolean {
+  if (!Array.isArray(groups)) return false;
+  return groups.some((group) => {
+    if (group === null || typeof group !== "object") return false;
+    if (group.kind === "element") return !rules.some((rule) => sameDeclaration(rule, group));
+    return omittedSequenceRules(rules, group.members);
+  });
 }
 
 function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: XmlMapping): ModelPlan {
@@ -250,8 +264,8 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   }
   const writerRefusals: string[] = [];
   const sequenceRules = flatSequenceRules(mapping, extra["sequence"], tokens);
-  const simpleSequence = sequenceRules !== undefined;
-  if (extra["sequence"] !== undefined && !simpleSequence) {
+  const readRefusal = sequenceRules === undefined && omittedSequenceRules(mapping.rules, extra["sequence"]);
+  if (extra["sequence"] !== undefined && sequenceRules?.canWrite !== true) {
     writerRefusals.push("the sequence compositor is not written by this emitter");
   }
 
@@ -268,7 +282,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   let contentSeen = false;
   let anyAttribute: string | null = null;
 
-  for (const rule of sequenceRules ?? mapping.rules) {
+  for (const rule of sequenceRules?.rules ?? mapping.rules) {
     if (rule.kind === "any_attribute") {
       // map_all_attributes: `{kind, to}` only, one per mapping, a non-collection hash attribute.
       for (const key of Object.keys(rule)) {
@@ -395,7 +409,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     if (rule.cdata === true) writerRefusals.push(`rule ${first} is cdata`);
     // A native sequence of repeated elements maps an omitted rule to an empty
     // collection. An empty collection emits no occurrences even with render_empty.
-    const repeatedSequence = simpleSequence && collection && policy.nil === "omit" && policy.empty === "as_empty";
+    const repeatedSequence = sequenceRules !== undefined && collection && policy.nil === "omit" && policy.empty === "as_empty";
     const absentList = repeatedSequence && spec.default?.present !== true;
     readElems.push(
       `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, dec: ${dec}${absentList ? ", absentList: true" : ""} },`,
@@ -417,6 +431,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     `  any: ${anyAttribute === null ? "null" : q({ to: anyAttribute, claimed: [...new Set(claimedAttrs)].sort(byCodePoint) })},`,
     "  elems: [", ...readElems, "  ],",
     `  content: ${readContent},`,
+    ...(readRefusal ? ['  refusal: "unrealized XML sequence members",'] : []),
     "};",
   ];
   const refusal = writerRefusals.length === 0 ? "null" : q(`unsupported XML writer mapping: ${writerRefusals.join("; ")}`);

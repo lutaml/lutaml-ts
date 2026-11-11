@@ -289,6 +289,7 @@ export interface ModelSpec {
   readonly any: { readonly to: string; readonly claimed: readonly string[] } | null;
   readonly elems: readonly ElemRule[];
   readonly content: ContentRule | null;
+  readonly refusal?: string;
 }
 
 type Token =
@@ -352,6 +353,7 @@ function withContext<T>(spec: ModelSpec, attribute: string, rule: string, loc: s
 
 /** Reads one element into a model instance following the spec. */
 export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => T): T {
+  if (spec.refusal !== undefined) throw new XmlError("unsupported_mapping", spec.refusal, el.loc).context(spec.id);
   const init: Record<string, unknown> = {};
   for (const rule of spec.attrs) {
     const raw = findAttribute(el, rule);
