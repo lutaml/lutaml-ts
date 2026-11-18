@@ -118,7 +118,17 @@ export type OrderedContentToken =
       readonly attribute: string;
       readonly index: number;
     }
-  | { readonly kind: "text" | "cdata"; readonly literal: string };
+  | { readonly kind: "text" | "cdata"; readonly literal: string }
+  /** An XML comment kept where it was read; `literal` is the comment body. */
+  | { readonly kind: "comment"; readonly literal: string }
+  /** An XML processing instruction kept where it was read. */
+  | { readonly kind: "processing_instruction"; readonly target: string; readonly data: string }
+  /**
+   * Input attribute order, present only when it differs from the declaration order.
+   * A writer emits the listed attributes first, in token order, then the rest in
+   * declaration order. `index` is always 0.
+   */
+  | { readonly kind: "attribute"; readonly attribute: string; readonly index: 0 };
 
 /** Declarative model choices run only on explicit model validation. */
 export interface ModelChoices {

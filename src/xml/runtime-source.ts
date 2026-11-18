@@ -30,6 +30,7 @@ export const FORMAT = "xml";
 export const ORDERED_MEMBER = "__lml_content";
 const KIND_ELEMENT = 1;
 const KIND_TEXT = 2;
+const KIND_COMMENT = 3;
 const KIND_CDATA = 4;
 const XSI = "http://www.w3.org/2001/XMLSchema-instance";
 const MAX_INPUT = 16 * 1024 * 1024;
@@ -206,6 +207,7 @@ function kids(el: El): Kid[] {
   return made;
 }
 
+/** The string value of a CDATA or comment node (moxml-ts text() is empty for both). */
 function cdataText(el: El, kid: Kid): string {
   return (kid.text ??= el.doc.xpath("string(" + kid.xp + ")"));
 }
@@ -295,7 +297,9 @@ export interface ModelSpec {
 type Token =
   | { readonly kind: "element"; readonly attribute: string; readonly index: number }
   | { readonly kind: "text" | "cdata"; readonly attribute: string; readonly index: number }
-  | { readonly kind: "text" | "cdata"; readonly literal: string };
+  | { readonly kind: "text" | "cdata" | "comment"; readonly literal: string }
+  | { readonly kind: "processing_instruction"; readonly target: string; readonly data: string }
+  | { readonly kind: "attribute"; readonly attribute: string; readonly index: 0 };
 
 function accepts(ns: Accept, actual: string): boolean {
   return ns.includes(actual);
@@ -349,6 +353,16 @@ function withContext<T>(spec: ModelSpec, attribute: string, rule: string, loc: s
     }
     throw error;
   }
+}
+
+/** Rule indexes of the input attributes in input order: the first rule that accepts each, once. */
+function attributeOrder(el: El, spec: ModelSpec): number[] {
+  const order: number[] = [];
+  for (const a of attributesOf(el)) {
+    const i = spec.attrs.findIndex((rule) => rule.names.includes(a.localName) && accepts(rule.ns, a.namespaceUri));
+    if (i >= 0 && !order.includes(i)) order.push(i);
+  }
+  return order;
 }
 
 /** Reads one element into a model instance following the spec. */
@@ -415,8 +429,17 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       if (spec.tokens) {
         tokens.push({ kind: "cdata", literal: cdataText(el, kid) });
       }
+    } else if (kid.kind === KIND_COMMENT) {
+      if (spec.tokens) tokens.push({ kind: "comment", literal: cdataText(el, kid) });
     } else if (spec.tokens) {
-      xmlFail("comments and processing instructions have no ordered-content token", el.loc, "invalid_ordered_content");
+      // moxml-ts at the pinned revision exposes no processing-instruction target.
+      xmlFail("processing instructions need a target that moxml-ts does not expose", el.loc, "invalid_ordered_content");
+    }
+  }
+  if (spec.tokens) {
+    const order = attributeOrder(el, spec);
+    if (order.some((v, i) => i > 0 && v < (order[i - 1] as number))) {
+      tokens.unshift(...order.map((i): Token => ({ kind: "attribute", attribute: (spec.attrs[i] as AttrRule).to, index: 0 })));
     }
   }
   for (const rule of spec.elems) {
@@ -838,6 +861,23 @@ function anyAttributeText(spec: WSpec, to: string, key: string, v: unknown): str
   throw new XmlError("invalid_document", "any_attribute value for " + key + " must be a scalar", "").context(spec.id, to);
 }
 
+/** Attribute rules in write order: attribute tokens first, in token order, then the rest in declaration order. */
+function attributeWriteOrder(spec: WSpec, tokens: readonly Token[] | null): readonly WAttr[] {
+  if (tokens === null) return spec.attrs;
+  const out: WAttr[] = [];
+  for (const token of tokens) {
+    if (token.kind !== "attribute") continue;
+    const rule = spec.attrs.find((r) => r.to === token.attribute);
+    if (rule === undefined || token.index !== 0 || out.includes(rule)) {
+      throw new XmlError("invalid_document", "attribute token names an unmapped, repeated or indexed member").context(spec.id, token.attribute);
+    }
+    out.push(rule);
+  }
+  if (out.length === 0) return spec.attrs;
+  for (const rule of spec.attrs) if (!out.includes(rule)) out.push(rule);
+  return out;
+}
+
 /** Writes one element of a model into its parent (or as a detached root). */
 export function writeModel<T extends object>(
   w: Writer,
@@ -850,7 +890,9 @@ export function writeModel<T extends object>(
   if (spec.refusal !== null) throw new XmlError("unsupported_mapping", spec.refusal).context(spec.id);
   const host = addElement(w, parent, name, ns);
   const get = (to: string): unknown => (value as Record<string, unknown>)[to];
-  for (const rule of spec.attrs) {
+  const tokenList = get(ORDERED_MEMBER);
+  const order = Array.isArray(tokenList) ? (tokenList as readonly Token[]) : null;
+  for (const rule of attributeWriteOrder(spec, spec.ordered ? order : null)) {
     const raw = get(rule.to);
     if (!present(raw)) {
       if (raw === null && rule.nil === "as_blank") host.setAttributeNS(rule.ns?.uri ?? "", qname(rule.name, rule.ns), "");
@@ -870,7 +912,6 @@ export function writeModel<T extends object>(
       }
     }
   }
-  const order = (get(ORDERED_MEMBER) ?? null) as readonly Token[] | null;
   const writeElem = (rule: WElem, item: unknown): void => {
     if (rule.child !== null) {
       rule.child(w, host, item as never, rule.name, rule.ns);
@@ -904,6 +945,10 @@ export function writeModel<T extends object>(
   };
   if (spec.ordered && order !== null) {
     for (const token of order) {
+      if (token.kind === "attribute") continue;
+      if (token.kind === "comment" || token.kind === "processing_instruction") {
+        throw new XmlError("unsupported_mapping", "comment and processing-instruction output needs node constructors that moxml-ts does not provide").context(spec.id);
+      }
       if ("literal" in token) {
         if (token.kind === "cdata") throw new XmlError("unsupported_mapping", "CDATA output needs a CDATA node constructor that moxml-ts does not provide").context(spec.id);
         appendText(w, host, token.literal);

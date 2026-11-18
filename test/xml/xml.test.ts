@@ -136,6 +136,13 @@ const OVERRIDES: Record<string, Override> = {
   "person-scalar-duplicate-first-wins": { error: "invalid_document" },
   // Ruby falls back to the declared type for an unknown discriminator value.
   "kennel-poly-unknown-kind": { error: "unknown_discriminator" },
+  // Ruby reads the comment but its LML export refuses it in ordered content; TS keeps it as a comment token.
+  "para-comment-refused": {
+    data: {
+      text: ["a"], b: ["x"], i: null,
+      __lml_content: [{ kind: "text", attribute: "text", index: 0 }, { kind: "comment", literal: "c" }, { kind: "element", attribute: "b", index: 0 }],
+    },
+  },
 };
 
 describe("emitter output", () => {
@@ -209,7 +216,7 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
       it(c.id, async () => {
         const codec = mod["xml"].CODECS[c.model_id];
         const override = OVERRIDES[c.id];
-        if (c.expected_error !== undefined || (override !== undefined && "error" in override)) {
+        if (override !== undefined ? "error" in override : c.expected_error !== undefined) {
           const info = await infoOf(async () => dump(await codec.parse(c.input)));
           expect(info, "expected an LmlError").toBeDefined();
           expect(info?.format).toBe("xml");
@@ -555,6 +562,75 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
     expect([back.value, back.__lml_content]).toEqual([[""], [text(0)]]);
     const plain = await read("<t>x<e>a</e>y</t>");
     expect([plain.value, plain.__lml_content]).toEqual([["x", "y"], [text(0), element, text(1)]]);
+  });
+});
+
+describe.skipIf(!available)("comments, processing instructions and attribute order in ordered content", () => {
+  const attr = (name: string): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false,
+  });
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["Mk@default"],
+    models: {
+      "Mk@default": {
+        lml: 2, model: "Mk", register: "default",
+        attributes: [attr("c"), attr("x"), attr("y")],
+        mappings: { xml: {
+          root: { element: "m" }, ordered: true,
+          rules: [
+            { kind: "element", name: ["c"], to: "c" },
+            { kind: "attribute", name: ["x"], to: "x" },
+            { kind: "attribute", name: ["y"], to: "y" },
+          ],
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  let mod: Loaded;
+  const ready = async (): Promise<Loaded> => (mod ??= (await load(generateInto(bundle)))["xml"]);
+  const element = { kind: "element", attribute: "c", index: 0 };
+  const attribute = (name: string) => ({ kind: "attribute", attribute: name, index: 0 });
+
+  it("keeps input attribute order and writes it back", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const reversed = await codec.parse('<m y="2" x="1"><c>t</c></m>');
+    expect(dump(reversed)).toEqual({ c: "t", x: "1", y: "2", __lml_content: [attribute("y"), attribute("x"), element] });
+    expect(await codec.stringify(reversed)).toMatch(/<m y="2" x="1"><c>t<\/c><\/m>/);
+    // declaration order needs no attribute token
+    const declared = await codec.parse('<m x="1" y="2"><c>t</c></m>');
+    expect(dump(declared)).toEqual({ c: "t", x: "1", y: "2", __lml_content: [element] });
+    expect(await codec.stringify(declared)).toMatch(/<m x="1" y="2"><c>t<\/c><\/m>/);
+    // a partial token list puts the named attribute first
+    const Mk = reversed.constructor as new (init: object) => object;
+    const partial = new Mk({ c: "t", x: "1", y: "2", __lml_content: [attribute("y"), element] });
+    expect(await codec.stringify(partial)).toMatch(/<m y="2" x="1">/);
+    // a value built without tokens writes declaration order
+    expect(await codec.stringify(new Mk({ c: "t", x: "1", y: "2" }))).toMatch(/<m x="1" y="2"><c>t<\/c><\/m>/);
+    // an attribute token for an element member is refused by the writer
+    const wrong = new Mk({ c: "t", x: "1", y: "2", __lml_content: [attribute("c"), element] });
+    expect((await infoOf(() => codec.stringify(wrong)))?.reason).toBe("invalid_document");
+  });
+
+  it("refuses an attribute token with a non-zero index", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const Mk = (await codec.parse("<m/>")).constructor as new (init: object) => object;
+    expect(() => new Mk({ x: "1", __lml_content: [{ kind: "attribute", attribute: "x", index: 1 }] })).toThrow();
+  });
+
+  it("reads a comment as a token; writing it and reading a processing instruction are refused under the pinned moxml-ts", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const value = await codec.parse("<m><!--note--><c>t</c></m>");
+    expect(dump(value)).toEqual({ c: "t", x: null, y: null, __lml_content: [{ kind: "comment", literal: "note" }, element] });
+    const out = await infoOf(() => codec.stringify(value));
+    expect(out?.reason).toBe("unsupported_mapping");
+    expect(out?.detail).toMatch(/comment/);
+    const pi = await infoOf(() => codec.parse("<m><?pi data?><c>t</c></m>"));
+    expect(pi?.reason).toBe("invalid_ordered_content");
   });
 });
 
