@@ -903,16 +903,28 @@ describe.skipIf(!available)("ordered XML sequence with standalone rules", () => 
 });
 
 describe.skipIf(!available)("unordered XML sequence with standalone rules", () => {
-  it("reads imported members and refuses the undetermined write order", { timeout: 30_000 }, async () => {
-    const bundle = JSON.parse(readFileSync(join(REPO, "test/lml/fixtures/pos-h-bundle.json"), "utf8")) as Bundle;
-    const id = "Omml::Models::CTPosH@omml";
-    const source = bundle.models[id]!;
-    const xml = source.mappings.xml!;
-    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.to !== "pos_offset") };
+  const bundle = JSON.parse(readFileSync(join(REPO, "test/lml/fixtures/pos-h-bundle.json"), "utf8")) as Bundle;
+  const id = "Omml::Models::CTPosH@omml";
+  const source = bundle.models[id]!;
+  const xml = source.mappings.xml!;
+  const codecWith = async (keep: (to: string) => boolean) => {
+    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.kind !== "element" || keep(rule.to)) };
     const changed = { ...bundle, models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } } };
-    const loaded = await load(generateInto(changed));
-    const codec = loaded["xml"].CODECS[id];
-    const input = '<m:CT_PosH xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:posOffset>10</m:posOffset></m:CT_PosH>';
+    return (await load(generateInto(changed)))["xml"].CODECS[id];
+  };
+  const input = '<m:CT_PosH xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:posOffset>10</m:posOffset></m:CT_PosH>';
+
+  it("writes imported members when the sequence fixes the write order", { timeout: 30_000 }, async () => {
+    // Rules [align] then imported [posOffset] is the sequence order [align, posOffset].
+    const codec = await codecWith((to) => to !== "pos_offset");
+    const parsed = await codec.parse(input);
+    expect(parsed.pos_offset).toEqual([10n]);
+    expect(await codec.stringify(parsed)).toBe(input);
+  });
+
+  it("reads imported members and refuses the undetermined write order", { timeout: 30_000 }, async () => {
+    // Rules [posOffset] then imported [align] is not the sequence order [align, posOffset].
+    const codec = await codecWith((to) => to !== "align");
     const parsed = await codec.parse(input);
     expect(parsed.pos_offset).toEqual([10n]);
     expect(await infoOf(() => codec.stringify(parsed))).toMatchObject({ reason: "unsupported_mapping", model_id: id });
