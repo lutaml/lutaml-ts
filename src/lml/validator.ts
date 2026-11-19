@@ -48,7 +48,7 @@ export const RESERVED_ATTRIBUTE_NAMES: readonly string[] = [
 const MAPPING_OBJECT_KEYS = ["root_mappings", "child_mappings"];
 const XML_PREFIX = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
-const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content"];
+const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content", "choices"];
 const ATTRIBUTE_KEYS = ["name", "type", "required", "collection", "default", "initialize_empty", "values", "discriminator"];
 const RULE_KEYS = ["kind", "name", "key", "to", "namespace", "prefix", "cdata", "render", "discriminator", "members", "min", "max", "child_mappings", "root_mappings", "polymorphic_map"];
 const FORMAT_KEYS = ["root", "namespace", "rules", "root_mappings", "child_mappings", "ordered", "mixed_content", "sequence"];
@@ -190,7 +190,49 @@ function modelV2(node: Obj, at: string, expectedId?: string): string {
   attributesV2(node["attributes"], at, id);
   if (has(node, "mappings")) mappingsV2(node["mappings"], at, id, node["attributes"]);
   orderedContent(node, at, id);
+  if (has(node, "choices")) modelChoices(node["choices"], node["attributes"], at + pointer("choices"), id);
   return id;
+}
+
+function modelChoices(spec: Tree | undefined, attributes: Tree | undefined, at: string, id: string): void {
+  expectObject(spec, at);
+  onlyKeys(spec, ["version", "validation", "groups"], at);
+  requireKeys(spec, ["version", "validation", "groups"], at);
+  checkVersion(spec, "version", [1], at);
+  if (spec["validation"] !== "explicit") fail("invalid_document", "model choices require explicit validation", at + pointer("validation"), {model_id: id});
+  expectArray(spec["groups"], at + pointer("groups"));
+  expectArray(attributes, at);
+  const names = new Set<string>();
+  for (const attribute of attributes) {
+    expectObject(attribute, at);
+    const name = attribute["name"];
+    expectString(name, at);
+    names.add(name);
+  }
+  spec["groups"].forEach((group, index) => modelChoice(group, names, `${at}/groups/${index}`, id));
+}
+function modelChoice(group: Tree | undefined, names: ReadonlySet<string>, at: string, id: string, depth = 0): void {
+  if (depth >= MAX_DEPTH) fail("invalid_document", `model choice nesting exceeds ${MAX_DEPTH}`, at, {model_id: id});
+  expectObject(group, at);
+  onlyKeys(group, ["min", "max", "format", "members"], at);
+  requireKeys(group, ["min", "max", "format", "members"], at);
+  const min = group["min"], max = group["max"];
+  if (!isInt(min) || min < 0 || !(max === null || isInt(max) && max >= 0)) {
+    fail("invalid_document", "model choice bounds must be nonnegative integers or null maximum", at, {model_id: id});
+  }
+  if (group["format"] !== null && group["format"] !== "xml") fail("unsupported_mapping", "model choice format must be XML or null", at + pointer("format"), {model_id: id});
+  expectArray(group["members"], at + pointer("members"));
+  group["members"].forEach((member, index) => {
+    const loc = `${at}/members/${index}`;
+    expectObject(member, loc);
+    if (Object.keys(member).length === 1 && has(member, "attribute")) {
+      const name = member["attribute"];
+      expectString(name, loc + pointer("attribute"));
+      if (!names.has(name)) fail("dangling_reference", `unknown choice attribute ${name}`, loc, {model_id: id});
+    } else if (Object.keys(member).length === 1 && has(member, "choice")) {
+      modelChoice(member["choice"], names, loc + pointer("choice"), id, depth + 1);
+    } else fail("invalid_document", "choice member must contain one attribute or nested choice", loc, {model_id: id});
+  });
 }
 
 function rejectExecutableFlags(node: Obj, at: string): void {
@@ -541,6 +583,7 @@ function validateBundleTree(node: Tree): void {
     expectObject(doc, loc);
     checkVersion(doc, "lml", [2], loc);
     modelV2(doc, loc, mid);
+    if (has(doc, "choices") && !capList.includes("model.choices.v1")) fail("capability_missing", "model choices require model.choices.v1", `${loc}/choices`, {model_id: mid});
     const mappings = doc["mappings"];
     for (const format of isObj(mappings) ? Object.keys(mappings) : []) {
       if (capList.includes(format)) continue;

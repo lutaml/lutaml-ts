@@ -267,6 +267,7 @@ export interface ElemRule {
   readonly ns: Accept;
   readonly collection: boolean;
   readonly dec: (el: El) => unknown;
+  readonly absentList?: true;
 }
 
 export interface ContentRule {
@@ -288,6 +289,7 @@ export interface ModelSpec {
   readonly any: { readonly to: string; readonly claimed: readonly string[] } | null;
   readonly elems: readonly ElemRule[];
   readonly content: ContentRule | null;
+  readonly refusal?: string;
 }
 
 type Token =
@@ -351,6 +353,7 @@ function withContext<T>(spec: ModelSpec, attribute: string, rule: string, loc: s
 
 /** Reads one element into a model instance following the spec. */
 export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => T): T {
+  if (spec.refusal !== undefined) throw new XmlError("unsupported_mapping", spec.refusal, el.loc).context(spec.id);
   const init: Record<string, unknown> = {};
   for (const rule of spec.attrs) {
     const raw = findAttribute(el, rule);
@@ -415,6 +418,9 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
     } else if (spec.tokens) {
       xmlFail("comments and processing instructions have no ordered-content token", el.loc, "invalid_ordered_content");
     }
+  }
+  for (const rule of spec.elems) {
+    if (rule.absentList === true && !Object.hasOwn(init, rule.to)) setOwn(init, rule.to, []);
   }
   if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && all.length === 0) {
     // An element with no child node at all (<mo/>, <mo></mo>) reads as one empty text, as Ruby's from_xml with a register does.
@@ -768,6 +774,7 @@ export interface WElem {
   /** Scalar: encodes to text. Model: writes the child element under its parent. */
   readonly enc: ((value: never) => string) | null;
   readonly child: ((w: Writer, host: Node, value: never, name: string, ns: NsOut | null) => Node) | null;
+  readonly skipEmptyCollection?: true;
   readonly cdata: boolean;
   readonly nil: Policy;
   readonly empty: Policy;
@@ -924,7 +931,7 @@ export function writeModel<T extends object>(
     }
     const list = items(rule);
     if (rule.collection && list.length === 0) {
-      if (rule.empty !== "omit") writeNil({ ...rule, nil: rule.empty });
+      if (rule.skipEmptyCollection !== true && rule.empty !== "omit") writeNil({ ...rule, nil: rule.empty });
       continue;
     }
     for (const item of list) writeElem(rule, item);

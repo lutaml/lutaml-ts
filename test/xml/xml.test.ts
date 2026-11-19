@@ -8,6 +8,7 @@ import { LmlError } from "../../src/contracts.js";
 import type { Bindings, Bundle, ErrorCode } from "../../src/contracts.js";
 import { generateModelsWith } from "../../src/generator/index.js";
 import { createXmlEmitter, xmlEmitter } from "../../src/xml/index.js";
+import { canonicalTree, stable, stripWs } from "../../scripts/mml/lib.mjs";
 
 // moxml-ts is a git dependency whose install fetches wasm (see package.json).
 // Where it is absent (an install without the dependency) the runtime cases are
@@ -657,5 +658,63 @@ describe.skipIf(!available)("reader limits and strictness (REVIEW-TS-1 H1, L6)",
     expect(await infoOf(() => c.parse("<q:n/>"))).toMatchObject({ reason: "invalid_document", location: "/n" });
     expect((await infoOf(() => c.parse("<q:n/>")))?.detail).toMatch(/prefix q is not bound/);
     expect((await infoOf(() => c.parse('<n a:u="1"/>')))?.detail).toMatch(/prefix a is not bound/);
+  });
+});
+
+describe.skipIf(!available)("native OMML flat XML sequence", () => {
+  it("preserves occurrence order and validates native read state explicitly", { timeout: 30_000 }, async () => {
+    const paths = join(REPO, "test/lml/fixtures");
+    const bundle = JSON.parse(readFileSync(join(paths, "pos-h-bundle.json"), "utf8")) as Bundle;
+    const corpus = JSON.parse(readFileSync(join(paths, "pos-h-corpus.json"), "utf8")) as {
+      rows: { id: string; input: string; expected: string; values: { align: string[]; pos_offset: string[] }; valid: boolean }[];
+      refusals: { input: string }[];
+    };
+    const mod = await load(generateInto(bundle));
+    const codec = mod["xml"].CODECS["Omml::Models::CTPosH@omml"];
+    for (const row of corpus.rows) {
+      const value = await codec.parse(row.input);
+      expect(value.align, row.id).toEqual(row.values.align);
+      expect(value.pos_offset.map(String), row.id).toEqual(row.values.pos_offset);
+      expect(value.constructor.validate(value).length === 0, row.id).toBe(row.valid);
+      const actual = stripWs(await canonicalTree(await codec.stringify(value)));
+      expect(stable(actual), row.id).toBe(stable(stripWs(await canonicalTree(row.expected))));
+    }
+    for (const row of corpus.refusals) await expect(codec.parse(row.input)).rejects.toThrow();
+  });
+});
+
+describe.skipIf(!available)("ordered XML sequence with standalone rules", () => {
+  it("reads imported sequence members and writes them in token order", { timeout: 30_000 }, async () => {
+    const id = "XmlOracle::Ord@default";
+    const source = oracle.bundle.models[id]!;
+    const xml = source.mappings.xml!;
+    const [first, ...imported] = xml.rules;
+    const mapping = { ...xml, rules: [first!], sequence: [{ kind: "sequence", members: imported }] };
+    const bundle = {
+      ...oracle.bundle,
+      roots: [id],
+      models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } },
+    };
+    const loaded = await load(generateInto(bundle));
+    const codec = loaded["xml"].CODECS[id];
+    const document = "<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>";
+    expect(await codec.stringify(await codec.parse(document))).toBe(document);
+  });
+});
+
+describe.skipIf(!available)("unordered XML sequence with standalone rules", () => {
+  it("reads imported members and refuses the undetermined write order", { timeout: 30_000 }, async () => {
+    const bundle = JSON.parse(readFileSync(join(REPO, "test/lml/fixtures/pos-h-bundle.json"), "utf8")) as Bundle;
+    const id = "Omml::Models::CTPosH@omml";
+    const source = bundle.models[id]!;
+    const xml = source.mappings.xml!;
+    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.to !== "pos_offset") };
+    const changed = { ...bundle, models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } } };
+    const loaded = await load(generateInto(changed));
+    const codec = loaded["xml"].CODECS[id];
+    const input = '<m:CT_PosH xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:posOffset>10</m:posOffset></m:CT_PosH>';
+    const parsed = await codec.parse(input);
+    expect(parsed.pos_offset).toEqual([10n]);
+    expect(await infoOf(() => codec.stringify(parsed))).toMatchObject({ reason: "unsupported_mapping", model_id: id });
   });
 });
