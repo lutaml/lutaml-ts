@@ -66,11 +66,12 @@ export function generateModelsWith(
   }
 
   const ctx = new PlanContext(bundle, bindings, classNames);
+  const withChoices = Object.values(bundle.models).some((doc) => doc.choices !== undefined);
   const classes: string[] = [];
   for (const id of ids) {
     const doc = bundle.models[id];
     const className = classNames.get(id);
-    if (doc !== undefined && className !== undefined) classes.push(emitClass(ctx, className, id, doc));
+    if (doc !== undefined && className !== undefined) classes.push(emitClass(ctx, className, id, doc, withChoices));
   }
 
   const imports = ctx.boundImports().map((bound) => {

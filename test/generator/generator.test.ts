@@ -229,6 +229,14 @@ describe("generated code executes", () => {
     expect(bad({ kind: "element", attribute: "items", index: 1 })).toEqual(["ordered_content"]);
     expect(bad({ kind: "text", attribute: "note", index: 0 })).toEqual(["ordered_content"]);
     expect(bad({ kind: "element", attribute: "nope", index: 0 })).toEqual(["ordered_content"]);
+    expect(bad({ kind: "comment", literal: "c" })).toEqual([]);
+    expect(bad({ kind: "comment" })).toEqual(["ordered_content"]);
+    expect(bad({ kind: "processing_instruction", target: "pi", data: "d" })).toEqual([]);
+    expect(bad({ kind: "processing_instruction", target: "pi" })).toEqual(["ordered_content"]);
+    expect(bad({ kind: "attribute", attribute: "items", index: 0 })).toEqual([]);
+    expect(bad({ kind: "attribute", attribute: "items", index: 1 })).toEqual(["ordered_content"]);
+    expect(bad({ kind: "attribute", attribute: "note", index: 0 })).toEqual(["ordered_content"]);
+    expect(bad({ kind: "pi", literal: "x" })).toEqual(["ordered_content"]);
     expect(new ShopBundle({ items: [item] }).__lml_content).toBe(m["ABSENT"]);
   });
 

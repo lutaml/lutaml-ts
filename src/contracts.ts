@@ -118,7 +118,34 @@ export type OrderedContentToken =
       readonly attribute: string;
       readonly index: number;
     }
-  | { readonly kind: "text" | "cdata"; readonly literal: string };
+  | { readonly kind: "text" | "cdata"; readonly literal: string }
+  /** An XML comment kept where it was read; `literal` is the comment body. */
+  | { readonly kind: "comment"; readonly literal: string }
+  /** An XML processing instruction kept where it was read. */
+  | { readonly kind: "processing_instruction"; readonly target: string; readonly data: string }
+  /**
+   * Input attribute order, present only when it differs from the declaration order.
+   * A writer emits the listed attributes first, in token order, then the rest in
+   * declaration order. `index` is always 0.
+   */
+  | { readonly kind: "attribute"; readonly attribute: string; readonly index: 0 };
+
+/** Declarative model choices run only on explicit model validation. */
+export interface ModelChoices {
+  readonly version: 1;
+  readonly validation: "explicit";
+  readonly groups: readonly ModelChoiceGroup[];
+}
+export interface ModelChoiceGroup {
+  readonly min: number;
+  readonly max: number | null;
+  /** XML mapping render-empty policies affect presence; null disables them. */
+  readonly format: "xml" | null;
+  readonly members: readonly ModelChoiceMember[];
+}
+export type ModelChoiceMember =
+  | { readonly attribute: string }
+  | { readonly choice: ModelChoiceGroup };
 
 export interface ModelDocument {
   readonly lml: typeof LML_DOCUMENT_VERSION;
@@ -127,6 +154,7 @@ export interface ModelDocument {
   readonly attributes: readonly AttributeSpec[];
   readonly mappings: Mappings;
   readonly ordered_content?: OrderedContentSpec;
+  readonly choices?: ModelChoices;
 }
 
 export interface ValueTypeSpec {
@@ -225,6 +253,8 @@ export interface TypeBinding {
   readonly module: string;
   /** Exported TypeScript name. */
   readonly export: string;
+  /** Use parse<Name>Xml and format<Name>Xml for raw XML lexical values. */
+  readonly xmlLexical?: true;
 }
 
 export interface Bindings {

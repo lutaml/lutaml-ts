@@ -7,13 +7,13 @@ Exit codes: 0 all observations match, 1 drift, 2 moxml-ts not installed
 
 ## Pin and install
 
-- `lutaml/moxml-ts` draft PR #9 head `a78091f7b11bb350fdd18a8dc6e12b3ae39661fd` (package version 0.1.0),
+- `lutaml/moxml-ts` main `216d56f93b733e6408772b607dbb4c5bbd489080` (merge of PR #37: 0.1.7 plus the codec faces and comment/CDATA/PI constructors, leptris-wasm 1.9.0),
   a git dependency in `package.json`; `npm ci` runs its `prepare` script (fetches the wasm bundles and builds
   `dist/`). The probe checks the version, the locked commit and a sha256 prefix of each vendored wasm bundle.
 - Not on npm. When it is not installed the probe exits 2 with `MOXML_TS_UNAVAILABLE` and the vitest cases skip.
 - Wasm init is lazy: `await parse(xml)` works under Node with no explicit `initEngine()`.
 
-## Findings (31 cases; 22 supported, 3 partial, 3 absent, 3 unsafe)
+## Findings (31 cases; 23 supported, 2 partial, 3 absent, 3 unsafe)
 
 Changed since the 07a pin (b0183ed): `Node` now has namespace accessors and in-scope/declared namespace lists,
 `attributes()` and `getAttribute()`, `declareNamespace`, `setAttributeNS`, and `Document.createElementNS`;
