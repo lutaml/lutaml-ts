@@ -11,12 +11,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const PIN = {
   package: "moxml-ts",
-  version: "0.1.0",
-  // lutaml/moxml-ts#9 (draft) head; the repo's package-lock.json must resolve to it.
-  commit: "a78091f7b11bb350fdd18a8dc6e12b3ae39661fd",
+  version: "0.1.7",
+  // lutaml/moxml-ts main (#37 merge: 0.1.7 + codec faces + comment/CDATA/PI constructors); the repo's package-lock.json must resolve to it.
+  commit: "216d56f93b733e6408772b607dbb4c5bbd489080",
   // First 16 hex chars of the sha256 of the vendored wasm bundles (no .pin files ship in the install).
-  leptrisWasm: "b85b0256a3885448",
-  moxmlWasm: "87bed5fe83f5d7e8",
+  leptrisWasm: "57248e229bf3303f",
+  moxmlWasm: "ab138c968ba2e035",
 };
 const UP = "lutaml/moxml-ts (src/document.ts)";
 const NS = "lutaml/leptris-rs#22 (namespace/attribute/capability follow-through)";
@@ -28,7 +28,7 @@ async function load() {
     return await import("moxml-ts");
   } catch (cause) {
     const e = new Error(
-      "MOXML_TS_UNAVAILABLE: moxml-ts is not installed (not on npm; run `npm ci` (moxml-ts is a git dependency at lutaml/moxml-ts#9 " +
+      "MOXML_TS_UNAVAILABLE: moxml-ts is not installed (not on npm; run `npm ci` (moxml-ts is a git dependency at lutaml/moxml-ts main " +
         PIN.commit.slice(0, 7) + "; see docs/xml-capabilities.md): " +
         String(cause.message).split("\n")[0],
     );
@@ -136,7 +136,7 @@ export async function runProbe() {
   add("ATTR-03", "attribute", "partial",
     {
       attributeNode: [7, "", ""],
-      nodeMethods: ["attributes", "getAttribute"],
+      nodeMethods: ["attribute", "attributes", "getAttribute"],
       first: { name: "k", prefix: "", localName: "k", namespaceUri: "", value: "v" },
       second: { name: "p:z", prefix: "p", localName: "z", namespaceUri: "urn:p", value: "1" },
       k: "v",
@@ -163,15 +163,15 @@ export async function runProbe() {
     { kinds: [KIND.text, KIND.element, KIND.text, KIND.cdata, KIND.cdata, KIND.text, KIND.comment, KIND.pi], ws: "\n  ", adjacentText: " t " },
     { kinds: seq, ws: mixed.root().children()[0].text(), adjacentText: mixed.root().children()[2].text() },
     "children() returns text/element/CDATA/comment/PI in document order; whitespace-only text is preserved; adjacent CDATA sections stay separate nodes");
-  add("MIX-02", "mixed-content", "partial",
-    { cdataText: "", viaXPath: "c<>", comment: "", count: 8 },
+  add("MIX-02", "mixed-content", "supported",
+    { cdataText: "c<>", viaXPath: "c<>", comment: "k", count: 8 },
     {
       cdataText: mixed.root().children()[3].text(),
       viaXPath: mixed.xpath("string(/a/node()[4])"),
       comment: mixed.root().children()[6].text(),
       count: mixed.xpathCount("/a/node()"),
     },
-    "CDATA nodes are identifiable (kind 4) but Node.text() is '' for CDATA, comment and PI; their data is reachable only via XPath string(/path/node()[i]). Comment/PI data likewise");
+    "CDATA nodes are identifiable (kind 4); Node.text() reads CDATA and comment data (leptris-wasm 1.9.0), and XPath string(/path/node()[i]) agrees");
   add("MIX-03", "mixed-content", "supported", { elementText: "t1xcd<>t2" },
     { elementText: (await m.parse('<a>t1<p:b xmlns:p="u">x</p:b><![CDATA[cd<>]]>t2</a>')).root().text() },
     "element.text() is the concatenated string-value, not mixed-content-aware: codecs need children() for order");
@@ -198,9 +198,9 @@ export async function runProbe() {
   const bad = await capture(() => b.createElement("1 bad name") && "created");
   add("BLD-03", "builder", "supported", { threw: 'invalid element name: "1 bad name"' }, bad, "createElement now validates the name and throws on an invalid XML name");
   add("BLD-04", "builder", "absent",
-    { missing: ["createCData", "createComment", "createProcessingInstruction", "removeAttribute"] },
+    { missing: ["removeAttribute"] },
     { missing: ["createCData", "createComment", "createProcessingInstruction", "removeAttribute"].filter((n) => typeof m.Document.prototype[n] !== "function" && typeof m.Node.prototype[n] !== "function") },
-    "builder still cannot emit CDATA, comments or PIs and cannot remove an attribute; CDATA output is therefore impossible from the builder (only a parsed CDATA survives toXml). createElementNS/setAttributeNS/declareNamespace now exist (BLD-05)", NS);
+    "builder emits CDATA, comments and PIs (createCData/createComment/createProcessingInstruction) but cannot remove an attribute. createElementNS/setAttributeNS/declareNamespace now exist (BLD-05)", NS);
   const nb = await m.createDocument();
   const nr = nb.createElementNS("urn:p", "p:r");
   nr.setAttributeNS("urn:q", "q:z", "1");
@@ -226,8 +226,10 @@ export async function runProbe() {
     const d = await m.parse(xml);
     return { text: d.xpath("string(/*)").slice(0, 40) };
   });
-  add("POL-01", "parser-policy", "supported", { threw: "leptris parse failed (status -2)" }, await x("<a><b></a>"),
-    "malformed XML throws; the message carries only a numeric status (no line/column, no model context)");
+  add("POL-01", "parser-policy", "supported",
+    { threw: "leptris parse failed (status -2): XML parse error at byte 10: Opening and ending tag mismatch: expected </b>, got </a> (line 1, column 11)" },
+    await x("<a><b></a>"),
+    "malformed XML throws; the message carries the status, the byte offset, the reason and line/column (no model context)");
   const xxe = await x('<?xml version="1.0"?><!DOCTYPE a [<!ENTITY x SYSTEM "file:///etc/passwd">]><a>&x;</a>');
   add("POL-02", "parser-policy", "supported", { ok: { text: "&x;" } }, xxe,
     "XXE: external SYSTEM entity is NOT resolved or fetched (no file content in output); the reference stays literal text. It is silently accepted, not rejected");
@@ -245,7 +247,7 @@ export async function runProbe() {
   const bd = await m.parse(bomb(5));
   add("POL-06", "parser-policy", "unsafe", { expandedChars: 1_000_000 }, { expandedChars: bd.xpath("string(/*)").length },
     "entity-expansion limit ABSENT: a 5-level (10^5 x 10 char) bomb expands in full with no cap or error. A 7-level bomb (~100 MB output) measured once at ~10.8 s without refusal (manual run, not repeated here). Codecs need an input-size/DOCTYPE guard before parse", "lutaml/moxml-ts + leptris-rs (parser limits)");
-  add("POL-07", "parser-policy", "supported", { threw: "leptris parse failed (status -2)" },
+  add("POL-07", "parser-policy", "supported", { threw: "leptris parse failed (status -2): XML parse error at byte 771: malformed input (line 1, column 772)" },
     await capture(async () => (await m.parse("<a>".repeat(20000) + "</a>".repeat(20000))).rootName()),
     "20000-deep nesting is refused with the generic parse error (a depth limit exists; its value and a distinct error code are not exposed)");
   add("POL-08", "parser-policy", "unsafe", { ok: "<p:a/>" }, await capture(async () => (await m.parse("<p:a/>")).toXml()),
