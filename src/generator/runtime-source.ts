@@ -445,8 +445,16 @@ export function orderedContent(
     };
     if (!isRecord(raw)) return bad("expected a token object");
     const kind = raw["kind"];
-    if (kind !== "element" && kind !== "text" && kind !== "cdata") return bad("unknown token kind");
-    if (kind !== "element" && typeof raw["literal"] === "string") return;
+    if (kind === "comment") {
+      if (typeof raw["literal"] !== "string") bad("needs a string literal");
+      return;
+    }
+    if (kind === "processing_instruction") {
+      if (typeof raw["target"] !== "string" || typeof raw["data"] !== "string") bad("needs a string target and data");
+      return;
+    }
+    if (kind !== "element" && kind !== "text" && kind !== "cdata" && kind !== "attribute") return bad("unknown token kind");
+    if ((kind === "text" || kind === "cdata") && typeof raw["literal"] === "string") return;
     const attribute = raw["attribute"];
     const position = raw["index"];
     if (typeof attribute !== "string" || !attributes.includes(attribute)) {
@@ -455,6 +463,7 @@ export function orderedContent(
     if (typeof position !== "number" || !Number.isInteger(position) || position < 0) {
       return bad("needs a non-negative integer index");
     }
+    if (kind === "attribute" && position !== 0) return bad("an attribute token needs index 0");
     const target = present(o, attribute);
     if (target === ABSENT || target === null) return bad("references an absent member");
     const size = Array.isArray(target) ? target.length : 1;
