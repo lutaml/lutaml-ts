@@ -100,3 +100,16 @@ test("report-only CLI needs no generated codecs, corpus, Ruby or XML dependency"
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("preserves explicit Ruby serialization mode and refuses mixed profiles", () => {
+  const part = copy();
+  part.oracle_profile = { escape_entities: true, dependency_mode: "bundler" };
+  const result = buildReport([part]);
+  assert.deepEqual(result.oracle_profile, part.oracle_profile);
+  assert.match(renderReport(result), /escape_entities.*true/);
+  assert.throws(() => buildReport([part, { ...copy(), oracle_profile: { escape_entities: false, dependency_mode: "bundler" } }]), /mixed Ruby oracle profiles/);
+  assert.throws(() => buildReport([part, copy()]), /mixed Ruby oracle profiles/);
+  assert.throws(() => buildReport([part, { ...copy(), oracle_profile: { escape_entities: true, dependency_mode: "installed-gems" } }]), /mixed Ruby oracle profiles/);
+  assert.throws(() => buildReport([{ ...part, oracle_profile: { escape_entities: "true", dependency_mode: "bundler" } }]), /invalid oracle profile/);
+});

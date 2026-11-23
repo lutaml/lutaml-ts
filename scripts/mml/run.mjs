@@ -28,6 +28,7 @@ const mmlRoot = arg("--mml-root", process.env.LML_MML_ROOT ?? "/Users/umerhassan
 const genDir = resolve(arg("--gen", join(REPO, "test/mml/.tmp/mml-gen")));
 const limit = Number(arg("--limit", "0"));
 const reuse = process.argv.includes("--reuse");
+const oracleProfile = { escape_entities: process.argv.includes("--ruby-escape-entities"), dependency_mode: process.env.LML_RUBY_DIRECT === "1" ? "installed-gems" : "bundler" };
 const ALL_SUITES = ["mml2-testsuite", "mml3-testsuite", "mmlcore-testsuite"];
 const onlySuite = arg("--suite", undefined);
 const reportOnly = process.argv.includes("--report-only"); // re-render report.md from results-*.json
@@ -66,11 +67,17 @@ function runRuby(version, files, tag) {
     const rubyArgs = ["-Ilib", join(REPO, "scripts/mml/ruby_oracle.rb"), version, list, jsonl];
     const [cmd, args] = process.env.LML_RUBY_DIRECT === "1" ? ["ruby", rubyArgs] : ["bundle", ["exec", "ruby", ...rubyArgs]];
     const r = spawnSync(cmd, args, {
-      cwd: wave1, env: { ...process.env, LML_MML_ROOT: mmlRoot }, encoding: "utf8", maxBuffer: 1 << 28,
+      cwd: wave1, env: { ...process.env, LML_MML_ROOT: mmlRoot, LML_XML_ESCAPE_ENTITIES: oracleProfile.escape_entities ? "1" : "0", LML_ORACLE_DEPENDENCY_MODE: oracleProfile.dependency_mode }, encoding: "utf8", maxBuffer: 1 << 28,
     });
     if (r.status !== 0) throw new Error(`ruby oracle failed (v${version} ${tag}):\n${r.stderr}`);
   }
-  return new Map(readFileSync(jsonl, "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.file, r]));
+  const rows = readFileSync(jsonl, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  for (const row of rows) {
+    if (row.oracle_options?.escape_entities !== oracleProfile.escape_entities || row.oracle_options?.dependency_mode !== oracleProfile.dependency_mode) {
+      throw new Error("cached Ruby oracle mode differs or is unrecorded; use a fresh --out directory");
+    }
+  }
+  return new Map(rows.map((r) => [r.file, r]));
 }
 
 mkdirSync(outDir, { recursive: true });
@@ -154,7 +161,7 @@ for (const version of VERSIONS) {
   }
 }
 
-if (!reportOnly) writeFileSync(join(outDir, `results-${onlySuite ?? "all"}.json`), JSON.stringify({ mml_version: "2.4.7", suite: onlySuite ?? "all", files: all.length, hasNs, results }, null, 1));
+if (!reportOnly) writeFileSync(join(outDir, `results-${onlySuite ?? "all"}.json`), JSON.stringify({ oracle_profile: oracleProfile, mml_version: "2.4.7", suite: onlySuite ?? "all", files: all.length, hasNs, results }, null, 1));
 if (process.argv.includes("--no-report")) process.exit(0);
 
 // ---- report: reject overlapping or inconsistent saved runs before writing totals.

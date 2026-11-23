@@ -120,7 +120,7 @@ the final full run supersedes these counts. Per-case rows are in the F2 evidence
 | empty text token, lone child element (`<mi><span/></mi>`, `<ms><mfrac/></ms>`) | 23 | Ruby `XmlElement#text` joins text nodes into one string for at most one child node | fixed |
 | whitespace-only literal text in mixed models without a content rule (`<set> </set>`) | 22 | Ruby skips whitespace-only literal tokens when writing | fixed |
 | TAB/LF in attribute values (`&#10;` in `style`, `width`) | 38 | valid XML; the old moxml-ts pin dropped TAB/LF when serializing | fixed by the moxml-ts 77d01eb pin (leptris-wasm 1.9.0): cached re-comparison of these 38 rows passes |
-| single-valued text content over several child nodes (mrow-like-002 `annotation`) | 2 | no comment in the input; Ruby holds a list in a string attribute | refused by name (`invalid_document`) |
+| single-valued text content over several child nodes (mrow-like-002 `annotation`) | 2 | Ruby scalar-content extraction was corrected to preserve the declared string shape; collections keep their text pieces | TS preserves the scalar string and meaningful whitespace; focused regression passes, final corpus rerun pending |
 | `&amp;name;` text (valid XML) | 28 | data equal; Ruby writes `&name;` unescaped, so its own output is not well-formed and is recovered differently when compared | unfixable in TS without writing malformed XML; stays a mismatch |
 | bare `&name;` without a DTD, several roots, non-MathML root, repeated singleton `mprescripts` | 31 | invalid XML or contract refusal | refused by name by TS; Ruby recovers |
 
@@ -180,3 +180,13 @@ results. `test/mml/report.test.ts` runs this same suite through Vitest, so the
 existing `npm test -- --run` CI command includes it.
 
 `test/mml/mml.test.ts`: the committed `test/mml/fixtures/{oracle.json,v3-mi-mixed.json,v4-mi-mixed.json}` generate, compile under strict tsc and replay the Ruby oracle for the mixed cases; the 4 MB nested-Math graphs are read from `$LML_MML_FIXTURES` (skipped, never passed, when absent). It also unit-tests the comparison helpers and, when a corpus run exists, checks every row has a known outcome and that no mismatch is unclassified.
+
+
+### Portable Ruby text mode
+
+Use `node scripts/mml/run.mjs --ruby-escape-entities ...` with a Ruby checkout
+supporting `to_xml(escape_entities: true)` to compare ordinary XML character
+data. The default retains legacy named-entity passthrough. Every new result
+part/report records this option and whether Ruby used Bundler; mixed profiles
+and reuse of a differently serialized oracle fail. Legacy results remain
+explicitly marked as unrecorded. Raw byte equality stays a separate metric.

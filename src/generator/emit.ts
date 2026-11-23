@@ -127,6 +127,10 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
     members.push(buildMember(ctx, attr, modelId, location));
   });
   const ordered = doc.ordered_content !== undefined;
+  const custom = doc.custom_initialize;
+  if (custom !== undefined && custom !== true) {
+    fail({ reason: "invalid_document", model_id: modelId, location: `/models/${modelId}/custom_initialize`, detail: "custom_initialize must be true when present" });
+  }
   const mandatory = members.some((m) => !m.omittable);
   const filledAny = members.some((m) => m.filler !== null);
   const names = members.map((m) => m.name);
@@ -137,9 +141,31 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   for (const m of members) lines.push(`  readonly ${m.prop}${m.omittable ? "?" : ""}: ${m.initType};`);
   if (ordered) lines.push(`  readonly ${ORDERED_MEMBER}?: rt.Maybe<readonly rt.OrderedContentToken[]>;`);
   lines.push("}", "");
+  if (custom === true) {
+    lines.push(
+      `/** Handwritten initializer for ${className} (custom_initialize): consumer code maps application arguments to declared data. */`,
+      `export type ${className}Initializer<A = never> = (args: A) => ${className}Init;`,
+      "",
+    );
+  }
   lines.push(`export class ${className} {`);
   lines.push(`  static readonly modelId = ${JSON.stringify(modelId)};`);
   lines.push(`  static readonly memberNames: readonly string[] = ${JSON.stringify(names)};`);
+  if (custom === true) {
+    lines.push(
+      "  /** The source model has a handwritten initializer; this class's constructor takes declared data only. */",
+      "  static readonly customInitialize = true;",
+      "  /** Default stub: fails with the custom_initialize error until a handwritten initializer is supplied. */",
+      "  static readonly initializeStub = (_args: unknown): never => rt.unimplementedInitializer(" + JSON.stringify(modelId) + ");",
+      "  /**",
+      "   * Application construction: runs the consumer-provided initializer, then the validating data",
+      "   * constructor. Without an initializer the stub throws; nothing is evaluated from the document.",
+      "   */",
+      `  static construct<A>(args: A, initializer: ${className}Initializer<A> = ${className}.initializeStub): ${className} {`,
+      `    return new ${className}(initializer(args));`,
+      "  }",
+    );
+  }
   lines.push("");
   for (const m of members) lines.push(`  readonly ${m.prop}: ${m.fieldType};`);
   if (ordered) lines.push(`  readonly ${ORDERED_MEMBER}: rt.Maybe<readonly rt.OrderedContentToken[]>;`);

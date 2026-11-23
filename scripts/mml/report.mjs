@@ -22,6 +22,12 @@ function summarize(rows) {
 
 export function buildReport(parts) {
   requireValid(Array.isArray(parts) && parts.length > 0, "no result parts");
+  const profiles = parts.map((part) => part.oracle_profile ?? null);
+  for (const profile of profiles) {
+    requireValid(profile === null || (typeof profile.escape_entities === "boolean" && ["bundler", "installed-gems"].includes(profile.dependency_mode)), "invalid oracle profile");
+  }
+  const profileKey = (p) => p === null ? "legacy-unrecorded" : key(p.escape_entities, p.dependency_mode);
+  requireValid(new Set(profiles.map(profileKey)).size === 1, "mixed Ruby oracle profiles");
   const identities = new Set();
   const rows = [];
   for (const part of parts) {
@@ -76,6 +82,7 @@ export function buildReport(parts) {
   return {
     schema_version: 1,
     mml_version: "2.4.7",
+    oracle_profile: profiles[0],
     population: { uniqueFiles, unmodifiedFiles: uniqueFiles - injectedFiles, injectedFiles },
     // totals count executions, including overlapping variants/versions, never unique documents.
     totals: summarize(rows),
@@ -87,6 +94,8 @@ export function buildReport(parts) {
 export function renderReport(report) {
   const lines = [
     `# mml pilot: ${report.population.uniqueFiles} unique .mml files; ${report.totals.cases} case executions; mml ${report.mml_version}`,
+    "",
+    `Ruby oracle: ${report.oracle_profile === null ? "legacy profile not recorded" : JSON.stringify(report.oracle_profile)}.`,
     "",
     "Variants and versions overlap on original files. Totals count executions; compare each suite/version/variant separately. Refusals are separate outcomes, not passes or equality results.",
     "",
