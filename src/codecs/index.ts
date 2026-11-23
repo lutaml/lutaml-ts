@@ -298,11 +298,14 @@ function validateMapping(mapping: KeyValueMapping, doc: ModelDocument, refuse: R
 }
 
 /** Hook-bearing rules of one mapping, in rule order, for the typed hook API. */
-function hookSurface(mapping: KeyValueMapping): { readonly reads: readonly string[]; readonly writes: readonly string[] } {
-  const reads: string[] = [];
+function hookSurface(mapping: KeyValueMapping): {
+  readonly reads: readonly { readonly name: string; readonly to: string | null }[];
+  readonly writes: readonly string[];
+} {
+  const reads: { name: string; to: string | null }[] = [];
   const writes: string[] = [];
   for (const rule of mapping.rules) {
-    if (rule.custom?.from !== undefined && !reads.includes(rule.custom.from)) reads.push(rule.custom.from);
+    if (rule.custom?.from !== undefined && !reads.some((r) => r.name === rule.custom?.from)) reads.push({ name: rule.custom.from, to: rule.to ?? null });
     if (rule.custom?.to !== undefined && !writes.includes(rule.custom.to)) writes.push(rule.custom.to);
   }
   return { reads, writes };
@@ -333,7 +336,14 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     if (custom !== undefined) hooked = true;
     // READ: a named hook replaces the declared-data decode for that key; a hook-only rule with no
     // read hook fails by name when the key is present. Declared fields decode first, hooks run after build.
-    if (custom?.from !== undefined) {
+    if (custom?.from !== undefined && rule.to !== undefined) {
+      // A hook for a declared attribute supplies its value BEFORE construction (a typed patch the model constructor
+      // then validates, required checks included); it has no model to receive because none exists yet.
+      decode.push(
+        `  const hit${index} = w.pick(o, ${keys});`,
+        `  if (hit${index} !== null) w.supply(init, ${JSON.stringify(rule.to)}, w.readHook(${modelId}, ${JSON.stringify(custom.from)}, hit${index}.key)(hit${index}.value, w.hookState()));`,
+      );
+    } else if (custom?.from !== undefined) {
       hookReads.push(
         `  const hit${index} = w.pick(o, ${keys});`,
         `  if (hit${index} !== null) w.readHook(${modelId}, ${JSON.stringify(custom.from)}, hit${index}.key)(model, hit${index}.value, w.hookState());`,
@@ -385,7 +395,14 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
 function hookInterface(ctx: Context, cls: string, mapping: KeyValueMapping): string {
   const { reads, writes } = hookSurface(mapping);
   const lines = [`export interface ${cls}Hooks<S = unknown> {`];
-  for (const name of reads) {
+  for (const { name, to } of reads) {
+    if (to !== null) {
+      lines.push(
+        `  /** READ hook (wire member value, state): returns the declared ${to} value before construction; the model constructor validates it (required included). undefined leaves it unset. */`,
+        `  readonly ${name}?: (value: unknown, state: S) => m.${cls}Init[${JSON.stringify(to)}] | undefined;`,
+      );
+      continue;
+    }
     lines.push(
       `  /** READ hook (model, wire member value, state): runs only when a ${ctx.format} read reaches its key. */`,
       `  readonly ${name}?: (model: m.${cls}, value: unknown, state: S) => void;`,

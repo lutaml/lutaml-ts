@@ -34,7 +34,12 @@ export function hookState(): unknown {
   return hookScope?.state;
 }
 
-type Hook = (model: unknown, subject: unknown, state: unknown) => void;
+type Hook = (...args: unknown[]) => unknown;
+
+/** Sets the declared value a read hook supplied (undefined leaves the attribute unset). */
+export function supply(init: Record<string, unknown>, to: string, value: unknown): void {
+  if (value !== undefined) Object.defineProperty(init, to, { value, enumerable: true, writable: true, configurable: true });
+}
 
 function hookFor(modelId: string, name: string | null, direction: "read" | "write", key: string): Hook {
   const table = hookScope === undefined || !Object.hasOwn(hookScope.hooks, modelId) ? undefined : hookScope.hooks[modelId];
