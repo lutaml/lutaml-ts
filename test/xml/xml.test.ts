@@ -134,6 +134,9 @@ const OVERRIDES: Record<string, Override> = {
   // Ruby keeps the first of a repeated single-valued element; the TS reader refuses it (REVIEW-TS-1 L6).
   "person-alias-both-first-wins": { error: "invalid_document" },
   "person-scalar-duplicate-first-wins": { error: "invalid_document" },
+  // The recorded value predates canonical Ruby e4439b37 (probe: <name>text<![CDATA[..]]></name> reads nil there; the
+  // cdata oracle row OrdinaryElement/plain_then_cdata): an ordinary element rule holds nothing for several child nodes.
+  "person-entities-and-cdata": { data: { id: null, lang: null, name: null, nick: null, tags: null, addr: null, age: null, ni: null, nb: null, ee: null } },
   // Ruby falls back to the declared type for an unknown discriminator value.
   "kennel-poly-unknown-kind": { error: "unknown_discriminator" },
 };
@@ -154,7 +157,7 @@ describe("emitter output", () => {
     const codecs = xmlEmitter.emit(oracle.bundle, NONE).get("xml/codecs.ts") ?? "";
     for (const name of ["Person", "Plain", "Para", "Ord", "Kennel", "Animal", "Dog", "Addr"]) {
       expect(codecs, name).toMatch(new RegExp(`export function read\\w*${name}\\(`));
-      expect(codecs, name).toMatch(new RegExp(`export function write\\w*${name}\\(`));
+      expect(codecs, name).toMatch(new RegExp(`export (async )?function write\\w*${name}\\(`));
     }
   });
 });
@@ -337,12 +340,6 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
         if (c.expected_data === undefined || OVERRIDES[c.id] !== undefined) continue;
         const codec = mod["xml"].CODECS[c.model_id];
         const value = await codec.parse(c.input);
-        if (c.id === "para-cdata-token") {
-          const info = await infoOf(() => codec.stringify(value));
-          expect(info?.reason, c.id).toBe("unsupported_mapping");
-          expect(info?.detail).toMatch(/CDATA/);
-          continue;
-        }
         const text: string = await codec.stringify(value);
         // as_nil / as_blank write an empty element for a nil member, which reads back as "";
         // an empty-string member under the default empty policy is omitted and reads back as nil (as in Ruby's own to_xml).
@@ -390,10 +387,10 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
       expect(text).toBe("<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>");
     });
 
-    it("refuses CDATA output by name instead of dropping it", async () => {
+    it("writes a parsed CDATA token back as a CDATA section (never dropped, never escaped text)", async () => {
       const codec = mod["xml"].CODECS["XmlOracle::Para@default"];
-      const info = await infoOf(async () => codec.stringify(await codec.parse("<p>a<![CDATA[raw]]></p>")));
-      expect(info).toMatchObject({ reason: "unsupported_mapping", format: "xml", model_id: "XmlOracle::Para@default" });
+      const out = await codec.stringify(await codec.parse("<p>a<![CDATA[raw<&>]]></p>"));
+      expect(out).toBe("<p>a<![CDATA[raw<&>]]></p>");
     });
   });
 });
@@ -487,7 +484,7 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
   const many = { min: 0, max: null };
   const bundle = (prefix: string | undefined): Bundle => ({
     lml_bundle: 1,
-    roots: ["Doc@default", "Tok@default"],
+    roots: ["Doc@default", "Tok@default", "Blk@default"],
     models: {
       "Doc@default": {
         lml: 2, model: "Doc", register: "default",
@@ -508,6 +505,17 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
             { kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } },
             { kind: "content", to: "value" },
           ],
+          namespace: { mode: "inherit" },
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+      // Mirrors a mixed ordered mml container with no content rule (set, list, semantics): element rule only.
+      "Blk@default": {
+        lml: 2, model: "Blk", register: "default",
+        attributes: [attr("e", { collection: many })],
+        mappings: { xml: {
+          root: { element: "b", mixed: true }, ordered: true, mixed_content: true,
+          rules: [{ kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } }],
           namespace: { mode: "inherit" },
         } },
         ordered_content: { member: "__lml_content", version: 1 },
@@ -555,6 +563,109 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
     expect([back.value, back.__lml_content]).toEqual([[""], [text(0)]]);
     const plain = await read("<t>x<e>a</e>y</t>");
     expect([plain.value, plain.__lml_content]).toEqual([["x", "y"], [text(0), element, text(1)]]);
+  });
+});
+
+describe.skipIf(!available)("single-child text and whitespace-only literal tokens (mml pilot F2, Ruby mml 2.4.7 measurements)", () => {
+  const attr = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  const many = { min: 0, max: null };
+  const rule = (name: string) => ({ kind: "element", name: [name], to: name, namespace: { mode: "inherit" } });
+  const model = (id: string, root: object, extra: object, attributes: unknown[], rules: unknown[]) => ({
+    lml: 2, model: id, register: "default", attributes,
+    mappings: { xml: { root, ...extra, rules, namespace: { mode: "inherit" } } },
+    ordered_content: { member: "__lml_content", version: 1 },
+  });
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["Tok@default", "Blk@default", "Att@default", "Txt@default"],
+    models: {
+      "Txt@default": {
+        lml: 2, model: "Txt", register: "default", attributes: [attr("value")],
+        mappings: { xml: { root: { element: "x" }, namespace: { mode: "inherit" }, rules: [{ kind: "content", to: "value" }] } },
+      },
+      "Att@default": {
+        lml: 2, model: "Att", register: "default", attributes: [attr("x"), attr("y"), attr("t")],
+        mappings: { xml: { root: { element: "a" }, namespace: { mode: "inherit" }, rules: [
+          { kind: "attribute", name: ["x"], to: "x", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "attribute", name: ["y"], to: "y", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "element", name: ["t"], to: "t", namespace: { mode: "inherit" } },
+        ] } },
+      },
+      "Tok@default": model("Tok", { element: "t", mixed: true }, { ordered: true, mixed_content: true },
+        [attr("value", { collection: many }), attr("e", { collection: many })], [rule("e"), { kind: "content", to: "value" }]),
+      "Blk@default": model("Blk", { element: "b", mixed: true }, { ordered: true, mixed_content: true }, [attr("e", { collection: many })], [rule("e")]),
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  const text = (index: number) => ({ kind: "text", attribute: "value", index });
+  let codecs: Record<string, { parse(t: string): Promise<unknown>; stringify(v: unknown): Promise<string> }>;
+  const codec = async (id: string) => (codecs ??= (await load(generateInto(bundle)))["xml"].CODECS as never)[id] as NonNullable<typeof codecs>[string];
+
+  // Ruby: XmlElement#text joins the text children into one string when the element has at most one child node, so a
+  // lone child element (mapped to a model or unmapped, with or without text of its own) leaves one empty text value;
+  // two or more children give the array of the real text nodes. Cases: mml3 mmlcore crashtests/mozilla/412237-1.mml
+  // (<ms><mfrac/></ms>) and children-with-negative-block-sizes.math0.mml (<mi><span/></mi>), measured with ruby_oracle.rb.
+  it("reads one empty text for a lone unmapped child element and none for two", { timeout: 180_000 }, async () => {
+    const c = await codec("Tok@default");
+    const read = async (xml: string) => dump(await c.parse(xml)) as { value: unknown; __lml_content: unknown };
+    for (const xml of ["<t><span/></t>", "<t><span>x</span></t>", "<t><span><b/></span></t>"]) {
+      const v = await read(xml);
+      expect([v.value, v.__lml_content], xml).toEqual([[""], [text(0)]]);
+    }
+    const two = await read("<t><span/><span/></t>");
+    expect([two.value, two.__lml_content]).toEqual([null, []]);
+    const spaced = await read("<t><span/> </t>");
+    expect([spaced.value, spaced.__lml_content]).toEqual([[" "], [text(0)]]); // preserved: a real text node
+  });
+
+  it("keeps single-valued content as a string across unmapped children", { timeout: 180_000 }, async () => {
+    const txt = await codec("Txt@default");
+    const read = async (xml: string) => (dump(await txt.parse(xml)) as { value: unknown }).value;
+    expect(await read("<x>ab</x>")).toBe("ab");
+    expect(await read("<x><span/></x>")).toBe("");
+    expect(await read("<x>a<span/>b</x>")).toBe("ab");
+    expect(await read("<x>a<span/></x>")).toBe("a");
+    expect(await read("<x>\n <span/>\n </x>")).toBe("\n \n ");
+    expect(await read(await txt.stringify(await txt.parse("<x>a<span/>b</x>")))).toBe("ab");
+  });
+
+  // Valid XML keeps a whitespace character written as a character reference in an attribute value (&#10; stays LF);
+  // only literal whitespace is normalized. The moxml-ts pin a78091f (leptris-wasm 1.6.5) dropped TAB and LF when
+  // serializing, so the writer refused them; the pin at 77d01eb (leptris-wasm 1.9.0) writes &#9; &#10; &#13; as Ruby does.
+  // Cases: mmlcore relations/css-styling/{border,margin,padding}-001.*.mml (style="...;&#10; ...") and lengths-2.math1.mml.
+  it("round-trips TAB, LF and CR in attribute values with quotes, ampersands and Unicode", { timeout: 180_000 }, async () => {
+    const att = await codec("Att@default");
+    const bare = (x: string) => x.replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    const read = async (xml: string) => dump(await att.parse(xml)) as { x: string; y: string };
+    const value = await read('<a x="p&#10;q&#9;r&#13;s" y="lit\neral\ttab"/>');
+    expect(value.x).toBe("p\nq\tr\rs"); // character references are kept by the parser
+    expect(value.y).toBe("lit eral tab"); // literal whitespace is normalized to spaces
+    const input = '<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>';
+    const out = bare(await att.stringify(await att.parse(input)));
+    expect(out).toBe('<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>'); // text keeps its raw LF
+    expect(await read(out)).toMatchObject({ x: "p\nq\tr\rs", y: '"a" & <b> é😀\n' });
+    // preserved: ordinary attributes are written unchanged
+    expect(bare(await att.stringify(await att.parse('<a x="plain" y="a b"/>')))).toBe('<a x="plain" y="a b"/>');
+  });
+
+  // Ruby (ordered_applier / instance_methods): a whitespace-only literal text token is skipped unless the model maps
+  // content; a mapped text value and non-ASCII whitespace (U+00A0, String#strip keeps it) are kept.
+  it("drops whitespace-only literal tokens of a mixed model without a content rule, and keeps them elsewhere", { timeout: 180_000 }, async () => {
+    const blk = await codec("Blk@default");
+    const out = async (xml: string) => (await blk.stringify(await blk.parse(xml))).replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    expect(await out("<b> <e>x</e> </b>")).toBe("<b><e>x</e></b>");
+    expect(await out("<b>  </b>")).toBe("<b/>");
+    expect(await out("<b>\n\t</b>")).toBe("<b/>");
+    expect(await out("<b>&#xA0;</b>")).toBe("<b>\u00a0</b>");
+    expect(await out("<b> y <e>x</e></b>")).toBe("<b> y <e>x</e></b>");
+    const tok = await codec("Tok@default");
+    expect((await tok.stringify(await tok.parse("<t> </t>"))).replace(/ xmlns(:\w+)?="[^"]*"/g, "")).toBe("<t> </t>");
+    // the data still records the literal token (Ruby's capture does)
+    expect((dump(await blk.parse("<b> </b>")) as { __lml_content: unknown }).__lml_content).toEqual([{ kind: "text", literal: " " }]);
   });
 });
 
@@ -623,7 +734,8 @@ describe.skipIf(!available)("reader limits and strictness (REVIEW-TS-1 H1, L6)",
     expect((await c.parse(tree, { limits: { maxElements: 100 } })).kids).toHaveLength(5);
     const cdata = "<n>" + "<![CDATA[a]]>".repeat(20) + "</n>";
     expect((await infoOf(() => c.parse(cdata, { limits: { maxCdata: 10 } })))).toMatchObject({ reason: "invalid_document", rule: "max_cdata_nodes" });
-    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("a".repeat(20));
+    // admitted by the raised limit; an ordinary content rule ignores CDATA (canonical Ruby), so the value is empty
+    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("");
   });
 
   it("a wide CDATA run is refused by default, not read at quadratic cost", { timeout: 180_000 }, async () => {

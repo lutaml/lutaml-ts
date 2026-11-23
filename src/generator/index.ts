@@ -53,6 +53,7 @@ export function generateModelsWith(
     const className = targetClassName(doc.model, doc.register, id);
     classNames.set(id, names.claim(className, id, id));
     names.claim(`${className}Init`, `${id} (init type)`, id);
+    if (doc.custom_initialize !== undefined) names.claim(`${className}Initializer`, `${id} (initializer type)`, id);
   }
   for (const root of bundle.roots) {
     if (!classNames.has(root)) {
@@ -102,7 +103,8 @@ export function generateModelsWith(
   ].join("\n");
 
   const files = new Map<string, string>();
-  files.set("runtime.ts", runtimeSource(options.contractsModule ?? DEFAULT_CONTRACTS_MODULE));
+  const anyCustom = ids.some((id) => bundle.models[id]?.custom_initialize !== undefined);
+  files.set("runtime.ts", runtimeSource(options.contractsModule ?? DEFAULT_CONTRACTS_MODULE, anyCustom));
   files.set("models.ts", models);
   const extensionExports = mergeEmitters(bundle, bindings, emitters, files);
   files.set(

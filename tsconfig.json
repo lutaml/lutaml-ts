@@ -17,5 +17,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  // generated-consumer sources: compiled against the generated modules by the pilot test, not in place
+  "exclude": ["test/pilots/unit/bindings/unit-hooks.ts"]
 }

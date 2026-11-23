@@ -163,7 +163,8 @@ describe("model errors (mirrors the Ruby validator spec)", () => {
   const cases: Record<string, [(d: any) => void, ErrorCode, string]> = {
     "lambda default": [(d) => { d.attributes[1].default = { lambda: "-> { 1 }" }; }, "lambda_default", "/attributes/1/default"],
     "present default without value": [(d) => { d.attributes[1].default = { present: true }; }, "invalid_document", "/attributes/1/default/value"],
-    "custom initialize": [(d) => { d.custom_initialize = true; }, "custom_initialize", "/custom_initialize"],
+    "custom initialize false": [(d) => { d.custom_initialize = false; }, "invalid_document", "/custom_initialize"],
+    "custom initialize non-boolean": [(d) => { d.custom_initialize = "true"; }, "invalid_document", "/custom_initialize"],
     "imperative order": [(d) => { d.imperative_element_order = true; }, "imperative_element_order", "/imperative_element_order"],
     "unknown builtin type": [(d) => { d.attributes[1].type = { kind: "builtin", name: "nope" }; }, "unknown_type", "/attributes/1/type/name"],
     "unknown type kind": [(d) => { d.attributes[1].type = { kind: "weird" }; }, "unknown_type", "/attributes/1/type/kind"],
@@ -210,7 +211,8 @@ describe("model errors (mirrors the Ruby validator spec)", () => {
   });
 
   it("uses only the agreed error codes", () => {
-    expect(ERROR_CODES).toHaveLength(21);
+    expect(ERROR_CODES).toHaveLength(22);
+    expect(ERROR_CODES).toContain("custom_serialization");
     expect(BUILTIN_TYPES).toHaveLength(33);
     expect(FORMATS).toEqual(["xml", "json", "yaml", "toml"]);
   });
