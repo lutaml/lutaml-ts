@@ -35,3 +35,35 @@ Changed since the 07a pin (b0183ed): `Node` now has namespace accessors and in-s
 - Guard input size and reject DOCTYPE before `parse` (no facade policy). Error context (line/column) is absent.
 
 Upstream references: `lutaml/moxml-ts#9` (Node/Document faces), `lutaml/leptris-rs#22`. moxml-ts was not edited.
+
+## Generated codec contract
+
+The facade observations above describe the XML dependency. Consumers of generated
+LML codecs also pass through the guards in `src/xml/runtime-source.ts`; a facade
+probe alone does not establish the generated codec's accepted input or output.
+
+- The generated parser refuses DOCTYPE before calling the dependency because its
+  parser has no entity-expansion limit. It also applies document limits. The
+  refusal is covered by `test/xml/xml.test.ts`; accepting a document in a direct
+  facade probe does not mean the generated codec accepts it.
+- CDATA can be read, but CDATA output is a named `unsupported_mapping` refusal
+  until the dependency provides a constructor. Ordered-content comments and
+  processing instructions are named `invalid_ordered_content` refusals.
+- The pinned dependency refuses elements with more than 255 attributes before
+  entering its wasm engine. The XML regression suite checks both the boundary
+  and a successful parse after a refusal.
+- XML tree equality, model-data equality and byte equality are separate results.
+  The MathML runner writes their counters from per-case evidence; see
+  [the pilot report instructions](mml-pilot.md). A successful tree comparison does
+  not establish Ruby-identical prefixes, whitespace or lexical output.
+
+For JSON interoperability, generated codecs consume Ruby's explicit
+`Lml.portable_json` profile. It writes integer and decimal values as strings;
+ordinary Ruby `to_json` is a different wire profile. The shared fixture and
+`test/json/ruby-interop.test.ts` cover generated readers and writers, including
+integers above JavaScript's safe-number range. LML carries declarations and data;
+serialization and application writer behavior remain in each target.
+
+These source contracts and test references are not a claim of a fresh facade or
+full-corpus run. Report executed commands, input revisions, refusal counts and
+comparison modes alongside any compatibility percentage.
