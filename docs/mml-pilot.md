@@ -110,6 +110,20 @@ Bundler-resolved parity). 4470 files, 7217 case executions; pass 6810 (mml2 as-i
 mmlcore as-is 1915, ns-injected 1870), unchanged except mml3 (1644 to 1645) after the `xml:lang` fix. Bytes equal: 0 (tree and data
 equality are separate counters in report.json). The 4250/4470 and 5717/6217 historical figures above are superseded by this run.
 
+## F2 residual classes after the text, whitespace and attribute fixes
+
+Measured by re-comparing the saved Ruby output of the pinned run above against the fixed TS (same comparator, no new Ruby run);
+the final full run supersedes these counts. Per-case rows are in the F2 evidence, not here.
+
+| family | rows | cause (checked against the raw inputs) | state |
+|---|---|---|---|
+| empty text token, lone child element (`<mi><span/></mi>`, `<ms><mfrac/></ms>`) | 23 | Ruby `XmlElement#text` joins text nodes into one string for at most one child node | fixed |
+| whitespace-only literal text in mixed models without a content rule (`<set> </set>`) | 22 | Ruby skips whitespace-only literal tokens when writing | fixed |
+| TAB/LF in attribute values (`&#10;` in `style`, `width`) | 40 rows (38 + 2 below) | valid XML; the pinned moxml-ts serializer drops TAB/LF from attribute values | now refused by name (`not_serializable`), no longer silent data loss |
+| single-valued text content over several child nodes (mrow-like-002 `annotation`) | 2 | no comment in the input; Ruby holds a list in a string attribute | refused by name (`invalid_document`) |
+| `&amp;name;` text (valid XML) | 28 | data equal; Ruby writes `&name;` unescaped, so its own output is not well-formed and is recovered differently when compared | unfixable in TS without writing malformed XML; stays a mismatch |
+| bare `&name;` without a DTD, several roots, non-MathML root, repeated singleton `mprescripts` | 31 | invalid XML or contract refusal | refused by name by TS; Ruby recovers |
+
 ## Historical refusal classifications
 
 These counts are from earlier snapshots, including the pre-T4 namespace

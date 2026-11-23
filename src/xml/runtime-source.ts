@@ -266,6 +266,8 @@ export interface ElemRule {
   readonly names: readonly string[];
   readonly ns: Accept;
   readonly collection: boolean;
+  /** The rule reads a scalar (string-like) child, not a model. */
+  readonly leaf: boolean;
   readonly dec: (el: El) => unknown;
 }
 
@@ -418,10 +420,10 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       xmlFail("comments and processing instructions have no ordered-content token", el.loc, "invalid_ordered_content");
     }
   }
-  if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && all.length === 0) {
-    // An element with no child node at all (<mo/>, <mo></mo>) reads as one empty text, as Ruby's from_xml with a register does.
-    // Ruby's rule for an element whose only children are elements is not uniform (checked: one unmapped or empty
-    // mapped child adds the empty text, two children or one string-valued child do not), so that case is left alone.
+  if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && lacksText(all, children, spec)) {
+    // Ruby's XmlElement#text joins the text children into one string when the element has at most one child node, so an
+    // element with no child (<mo/>, <mo></mo>) or one lone child element (unmapped, or mapped to a model) reads as one
+    // empty text; two or more children give the array of real text nodes. A lone scalar-valued child adds none (measured).
     texts.push("");
     if (spec.tokens) tokens.push({ kind: "text", attribute: spec.content.to, index: 0 });
   }
@@ -431,11 +433,22 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       const list = spec.mixed || spec.ordered ? texts : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
       if (list.length > 0) setOwn(init, content.to, list);
     } else {
+      if (all.length > 1 && textNodes > 0) {
+        throw new XmlError("invalid_document", "single-valued text content spread over " + all.length + " child nodes; Ruby reads it as a list", el.loc).context(spec.id, content.to);
+      }
       setOwn(init, content.to, textOf(el, true));
     }
   }
   if (spec.tokens) setOwn(init, ORDERED_MEMBER, tokens);
   return build(cls, init, spec, el.loc);
+}
+
+function lacksText(all: readonly Kid[], children: readonly El[], spec: ModelSpec): boolean {
+  if (all.length === 0) return true;
+  const only = children[0];
+  if (all.length !== 1 || only === undefined || all[0]?.kind !== KIND_ELEMENT) return false;
+  const rule = spec.elems.find((r) => matchesElem(r, only));
+  return rule === undefined || !rule.leaf;
 }
 
 /** Constructs the model; constructor violations become XmlErrors. */
@@ -741,6 +754,7 @@ export function xmlCodec<T>(
 const WRITER = String.raw`
 // ---------------------------------------------------------------- writing
 
+
 export interface Writer {
   readonly doc: Document;
   /** In-scope namespace bindings per written element ("" is the default namespace). */
@@ -785,6 +799,17 @@ export interface WSpec {
   readonly ordered: boolean;
   /** A reason the writer refuses this mapping by name (unsupported_mapping). */
   readonly refusal: string | null;
+}
+
+/**
+ * The pinned moxml-ts serializer drops TAB and LF from attribute values (a parsed &#10; or &#9; is kept in the model but
+ * written as nothing), which would silently change the data. Refuse by name instead; CR is written as &#13; and is fine.
+ */
+function attributeText(spec: WSpec, to: string, name: string, text: string): string {
+  if (/[\t\n]/.test(text)) {
+    throw new XmlError("not_serializable", "attribute " + name + " holds a TAB or LF that the moxml-ts serializer would drop").context(spec.id, to, name);
+  }
+  return text;
 }
 
 function qname(name: string, ns: NsOut | null): string {
@@ -851,7 +876,7 @@ export function writeModel<T extends object>(
       if (raw === null && rule.nil === "as_blank") host.setAttributeNS(rule.ns?.uri ?? "", qname(rule.name, rule.ns), "");
       continue;
     }
-    const text = (rule.enc as (v: unknown) => string)(raw);
+    const text = attributeText(spec, rule.to, rule.name, (rule.enc as (v: unknown) => string)(raw));
     if (text === "" && rule.empty === "omit") continue;
     if (rule.ns === null) host.setAttribute(rule.name, text);
     else host.setAttributeNS(rule.ns.uri, qname(rule.name, rule.ns), text);
@@ -861,7 +886,7 @@ export function writeModel<T extends object>(
     if (typeof bag === "object" && bag !== null && !Array.isArray(bag)) {
       for (const [k, v] of Object.entries(bag)) {
         if (v === null || v === undefined) continue;
-        host.setAttribute(k, anyAttributeText(spec, spec.any, k, v));
+        host.setAttribute(k, attributeText(spec, spec.any, k, anyAttributeText(spec, spec.any, k, v)));
       }
     }
   }
@@ -901,6 +926,8 @@ export function writeModel<T extends object>(
     for (const token of order) {
       if ("literal" in token) {
         if (token.kind === "cdata") throw new XmlError("unsupported_mapping", "CDATA output needs a CDATA node constructor that moxml-ts does not provide").context(spec.id);
+        // Ruby skips a whitespace-only literal text token unless the model maps content (String#strip: ASCII only).
+        if (spec.content === null && token.kind === "text" && /^[ \t\n\v\f\r\0]*$/.test(token.literal)) continue;
         appendText(w, host, token.literal);
         continue;
       }
