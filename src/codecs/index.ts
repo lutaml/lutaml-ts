@@ -34,7 +34,7 @@ const NIL_POLICIES = new Set(["omit", "as_nil", "as_empty"]);
 const STRING_FAMILY = new Set(["string", "token", "uri", "email", "hostname", "ip", "symbol", "date", "date_time", "time", "time_without_date", "duration",
   "email_address", "ip_v4_address", "ip_v6_address", "uuid", "reference", "uri_reference", "date_with_timezone", "date_time_with_timezone", "day_time_duration", "year_month_duration"]);
 const EXACT_BUILTINS = new Set(["decimal", "rational"]);
-const KNOWN_RULE_KEYS = new Set(["key", "to", "render", "discriminator"]);
+const KNOWN_RULE_KEYS = new Set(["key", "to", "render", "discriminator", "custom"]);
 
 /** Wire shape an empty value is recognised by. */
 type Shape = "scalar" | "text" | "hash" | "list";
@@ -251,54 +251,129 @@ function validateMapping(mapping: KeyValueMapping, doc: ModelDocument, refuse: R
   const seenAttr = new Set<string>();
   const seenKey = new Set<string>();
   for (const rule of mapping.rules) {
-    for (const name of Object.keys(rule)) {
-      if (!KNOWN_RULE_KEYS.has(name)) refuse.unsupported(`rule-level ${name} is not supported`, rule.to);
+    const hookOnly = rule.to === undefined;
+    if (hookOnly && rule.custom === undefined) {
+      refuse.raise("dangling_reference", "rule without custom hooks needs a declared attribute", undefined);
     }
-    if (!attributes.has(rule.to)) refuse.raise("dangling_reference", `rule maps unknown attribute ${rule.to}`, rule.to);
-    if (seenAttr.has(rule.to)) refuse.unsupported("several rules on one attribute", rule.to);
-    seenAttr.add(rule.to);
-    if (!Array.isArray(rule.key) || rule.key.length === 0) refuse.raise("invalid_document", "rule needs wire keys", rule.to);
+    const label = rule.to ?? (rule.key as readonly string[] | undefined)?.[0];
+    for (const name of Object.keys(rule)) {
+      if (!KNOWN_RULE_KEYS.has(name)) refuse.unsupported(`rule-level ${name} is not supported`, label);
+    }
+    if (rule.to !== undefined) {
+      if (!attributes.has(rule.to)) refuse.raise("dangling_reference", `rule maps unknown attribute ${rule.to}`, rule.to);
+      if (seenAttr.has(rule.to)) refuse.unsupported("several rules on one attribute", rule.to);
+      seenAttr.add(rule.to);
+    }
+    if (!Array.isArray(rule.key) || rule.key.length === 0) refuse.raise("invalid_document", "rule needs wire keys", label);
     for (const key of rule.key) {
-      if (seenKey.has(key)) refuse.unsupported(`duplicate wire key ${JSON.stringify(key)}`, rule.to);
+      if (seenKey.has(key)) refuse.unsupported(`duplicate wire key ${JSON.stringify(key)}`, label);
       seenKey.add(key);
     }
   }
 }
 
-function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: KeyValueMapping): string {
+/** Hook-bearing rules of one mapping, in rule order, for the typed hook API. */
+function hookSurface(mapping: KeyValueMapping): { readonly reads: readonly string[]; readonly writes: readonly string[] } {
+  const reads: string[] = [];
+  const writes: string[] = [];
+  for (const rule of mapping.rules) {
+    if (rule.custom?.from !== undefined && !reads.includes(rule.custom.from)) reads.push(rule.custom.from);
+    if (rule.custom?.to !== undefined && !writes.includes(rule.custom.to)) writes.push(rule.custom.to);
+  }
+  return { reads, writes };
+}
+
+function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: KeyValueMapping): { readonly text: string; readonly hooked: boolean } {
   const refuse = new Refusal(ctx.format, id);
   validateMapping(mapping, doc, refuse);
   const decode: string[] = [];
+  const hookReads: string[] = [];
   const encode: string[] = [];
   const wireKeys: Record<string, string> = {};
-  for (const rule of mapping.rules) {
-    const attr = doc.attributes.find((a) => a.name === rule.to) as AttributeSpec;
-    const wire = attributeWire(ctx, doc, id, attr, refuse);
-    const policy = policies(rule, refuse);
+  const modelId = `m.${cls}.modelId`;
+  let hooked = false;
+  mapping.rules.forEach((rule, index) => {
     const first = rule.key[0] as string;
-    wireKeys[rule.to] = first;
-    decode.push(`  w.field(o, ${JSON.stringify(rule.key)}, init, ${JSON.stringify(rule.to)}, ${wire.dec});`);
-    encode.push(
-      `  w.render(out, ${JSON.stringify(first)}, x${access(rule.to)}, ${wire.enc}, ${JSON.stringify(policy.nil)}, ${JSON.stringify(policy.empty)}, ${JSON.stringify(wire.shape)});`,
+    const keys = JSON.stringify(rule.key);
+    const custom = rule.custom;
+    let attr: AttributeSpec | undefined;
+    let wire: Wire | undefined;
+    let policy: ReturnType<typeof policies> | undefined;
+    if (rule.to !== undefined) {
+      attr = doc.attributes.find((a) => a.name === rule.to) as AttributeSpec;
+      wire = attributeWire(ctx, doc, id, attr, refuse);
+      policy = policies(rule, refuse);
+      wireKeys[rule.to] = first;
+    }
+    if (custom !== undefined) hooked = true;
+    // READ: a named hook replaces the declared-data decode for that key; a hook-only rule with no
+    // read hook fails by name when the key is present. Declared fields decode first, hooks run after build.
+    if (custom?.from !== undefined) {
+      hookReads.push(
+        `  const hit${index} = w.pick(o, ${keys});`,
+        `  if (hit${index} !== null) w.readHook(${modelId}, ${JSON.stringify(custom.from)}, hit${index}.key)(model, hit${index}.value, w.hookState());`,
+      );
+    } else if (rule.to !== undefined && wire !== undefined) {
+      decode.push(`  w.field(o, ${keys}, init, ${JSON.stringify(rule.to)}, ${wire.dec});`);
+    } else {
+      hookReads.push(
+        `  const hit${index} = w.pick(o, ${keys});`,
+        `  if (hit${index} !== null) w.readHook(${modelId}, null, hit${index}.key);`,
+      );
+    }
+    // WRITE: every write reaches the rule; a named hook fills the document object, a hook-only rule with
+    // no write hook fails by name.
+    if (custom?.to !== undefined) {
+      encode.push(`  w.writeHook(${modelId}, ${JSON.stringify(custom.to)}, ${JSON.stringify(first)})(x, out, w.hookState());`);
+    } else if (rule.to !== undefined && wire !== undefined && policy !== undefined) {
+      encode.push(
+        `  w.render(out, ${JSON.stringify(first)}, x${access(rule.to)}, ${wire.enc}, ${JSON.stringify(policy.nil)}, ${JSON.stringify(policy.empty)}, ${JSON.stringify(wire.shape)});`,
+      );
+    } else {
+      encode.push(`  w.writeHook(${modelId}, null, ${JSON.stringify(first)});`);
+    }
+  });
+  const build = `w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId)`;
+  return {
+    hooked,
+    text: [
+      `export function decode${cls}(v: unknown): m.${cls} {`,
+      "  const o = w.object(v);",
+      "  const init: Record<string, unknown> = {};",
+      ...decode,
+      ...(hookReads.length === 0 ? [`  return ${build};`] : [`  const model = ${build};`, ...hookReads, "  return model;"]),
+      "}",
+      "",
+      `export function encode${cls}(x: m.${cls}): w.Rec {`,
+      "  const out: Record<string, unknown> = {};",
+      ...encode,
+      "  return out;",
+      "}",
+      "",
+      `export const codec${cls} = w.${ctx.format}Codec<m.${cls}>(m.${cls}.modelId, decode${cls}, encode${cls});`,
+      "",
+    ].join("\n"),
+  };
+}
+
+/** Typed hook interface for one hooked model: the static consumer API for handwritten implementations. */
+function hookInterface(ctx: Context, cls: string, mapping: KeyValueMapping): string {
+  const { reads, writes } = hookSurface(mapping);
+  const lines = [`export interface ${cls}Hooks<S = unknown> {`];
+  for (const name of reads) {
+    lines.push(
+      `  /** READ hook (model, wire member value, state): runs only when a ${ctx.format} read reaches its key. */`,
+      `  readonly ${name}?: (model: m.${cls}, value: unknown, state: S) => void;`,
     );
   }
-  return [
-    `export function decode${cls}(v: unknown): m.${cls} {`,
-    "  const o = w.object(v);",
-    "  const init: Record<string, unknown> = {};",
-    ...decode,
-    `  return w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId);`,
-    "}",
-    "",
-    `export function encode${cls}(x: m.${cls}): w.Rec {`,
-    "  const out: Record<string, unknown> = {};",
-    ...encode,
-    "  return out;",
-    "}",
-    "",
-    `export const codec${cls} = w.${ctx.format}Codec<m.${cls}>(m.${cls}.modelId, decode${cls}, encode${cls});`,
-    "",
-  ].join("\n");
+  for (const name of writes) {
+    lines.push(
+      `  /** WRITE hook (model, document object, state): runs on every ${ctx.format} write of the model; fills the document object. */`,
+      `  readonly ${name}?: (model: m.${cls}, document: Record<string, unknown>, state: S) => void;`,
+    );
+  }
+  lines.push("}", "");
+  return lines.join("\n");
 }
 
 /**
@@ -321,12 +396,19 @@ export function createKeyValueEmitter(format: KeyValueFormat, options: CodecOpti
       const ctx = new Context(format, bundle, bindings, classNames);
       const bodies: string[] = [];
       const registry: string[] = [];
+      const hookTypes: string[] = [];
+      const hookTable: string[] = [];
       for (const id of ids) {
         const doc = bundle.models[id];
         const mapping = ctx.mapping(id);
         const cls = classNames.get(id);
         if (doc === undefined || mapping === undefined || cls === undefined) continue;
-        bodies.push(emitModel(ctx, id, doc, cls, mapping));
+        const emitted = emitModel(ctx, id, doc, cls, mapping);
+        bodies.push(emitted.text);
+        if (emitted.hooked) {
+          hookTypes.push(hookInterface(ctx, cls, mapping));
+          hookTable.push(`  readonly ${JSON.stringify(id)}?: ${cls}Hooks<S>;`);
+        }
         registry.push(`  ${JSON.stringify(id)}: codec${cls},`);
       }
       const codecs =
@@ -341,12 +423,32 @@ export function createKeyValueEmitter(format: KeyValueFormat, options: CodecOpti
               ...ctx.tables,
               ...(ctx.tables.length > 0 ? [""] : []),
               ...bodies,
+              ...(hookTypes.length === 0
+                ? []
+                : [
+                    ...hookTypes,
+                    "/** Trusted handwritten hook implementations by model ID. */",
+                    "export interface CodecHooks<S = unknown> {",
+                    ...hookTable,
+                    "}",
+                    "",
+                    "/**",
+                    " * Runs fn with the handwritten hooks and application state installed. Hooks absent here fail by name",
+                    " * (custom_serialization) only when their direction is attempted. State is the explicit store for",
+                    " * values that live only in hooks; nothing is evaluated from the document.",
+                    " */",
+                    "export function withHooks<S, T>(hooks: CodecHooks<S>, state: S, fn: () => T): T {",
+                    "  return w.withHooks(hooks, state, fn);",
+                    "}",
+                    "",
+                  ]),
               "/** Every codec by model ID. */",
               "export const CODECS = {",
               ...registry,
               "} as const;",
               "",
             ];
+      const anyHooks = hookTypes.length > 0;
       const runtimeExports =
         format === "json"
           ? `export { WireError, jsonCodec } from "./runtime.js";\nexport type { JsonCodec, Rec } from "./runtime.js";`
@@ -354,7 +456,7 @@ export function createKeyValueEmitter(format: KeyValueFormat, options: CodecOpti
       return new Map([
         [`${format}/codecs.ts`, codecs.join("\n")],
         [`${format}/index.ts`, [HEADER, 'export * from "./codecs.js";', runtimeExports, ""].join("\n")],
-        [`${format}/runtime.ts`, codecRuntimeSource(contracts, format)],
+        [`${format}/runtime.ts`, codecRuntimeSource(contracts, format, anyHooks)],
       ]);
     },
   };

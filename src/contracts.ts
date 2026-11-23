@@ -82,9 +82,20 @@ export interface XmlRule {
   readonly discriminator?: Discriminator;
 }
 
+/**
+ * Names (never bodies) of handwritten serialization hooks: `to` is the WRITE
+ * hook `(model, document_object)`, `from` the READ hook `(model, value)`.
+ */
+export interface CustomSerialization {
+  readonly to?: string;
+  readonly from?: string;
+}
+
 export interface KeyValueRule {
   readonly key: readonly string[];
-  readonly to: string;
+  /** Declared attribute; a rule with `custom` may omit it (hook-only rule). */
+  readonly to?: string;
+  readonly custom?: CustomSerialization;
   readonly render?: RenderPolicy;
 }
 
@@ -165,6 +176,7 @@ export type ErrorCode =
   | "non_serializable_default"
   | "lambda_default"
   | "custom_initialize"
+  | "custom_serialization"
   | "imperative_element_order"
   | "invalid_ordered_content"
   | "reserved_member"
@@ -188,6 +200,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "non_serializable_default",
   "lambda_default",
   "custom_initialize",
+  "custom_serialization",
   "imperative_element_order",
   "invalid_ordered_content",
   "reserved_member",
