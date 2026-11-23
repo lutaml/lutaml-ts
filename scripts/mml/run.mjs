@@ -4,7 +4,7 @@
 //
 //   node scripts/mml/generate.mjs                       # once: generated mml-ts
 //   node scripts/mml/run.mjs [--corpora DIR] [--out DIR] [--wave1 DIR] [--mml-root DIR]
-//                            [--limit N] [--reuse]
+//                            [--limit N] [--reuse] [--report-only]
 //
 // Corpora (clone read-only, never committed): DIR/{mml2,mml3,mmlcore}-testsuite
 // from github.com/plurimath. Ruby runs in --wave1 (a lutaml-model checkout with
@@ -38,7 +38,14 @@ const bothVersions = process.argv.includes("--both-versions");
 const VERSIONS = ["3", "4"];
 const NS = "http://www.w3.org/1998/Math/MathML";
 
-import { canonicalTree, causeOf, squeezeWs, dump, emptyNormal, firstDiff, refusalClass, rubyClass, stable, stripWs } from "./lib.mjs";
+import { buildReport, renderReport } from "./report.mjs";
+
+// Reporting saved results needs neither generated codecs nor the XML dependency.
+if (reportOnly) {
+  writeReport();
+  process.exit(0);
+}
+const { canonicalTree, causeOf, squeezeWs, dump, emptyNormal, firstDiff, refusalClass, rubyClass, stable, stripWs } = await import("./lib.mjs");
 
 function walk(dir, acc = []) {
   for (const name of readdirSync(dir).sort()) {
@@ -146,38 +153,14 @@ for (const version of VERSIONS) {
 if (!reportOnly) writeFileSync(join(outDir, `results-${onlySuite ?? "all"}.json`), JSON.stringify({ mml_version: "2.4.7", suite: onlySuite ?? "all", files: all.length, hasNs, results }, null, 1));
 if (process.argv.includes("--no-report")) process.exit(0);
 
-// ---- report
-// Per-suite runs write results-<suite>.json; a run without --suite writes results-all.json. Keep one kind per --out.
-const merged = readdirSync(outDir).filter((n) => /^results-.*\.json$/.test(n));
-const parts = merged.map((n) => JSON.parse(readFileSync(join(outDir, n), "utf8")));
-const everything = parts.flatMap((p) => p.results);
-const totalFiles = parts.reduce((n, p) => n + p.files, 0);
-const totalNs = parts.reduce((n, p) => n + p.hasNs, 0);
-const lines = [];
-const group = (rows, key) => rows.reduce((m, r) => m.set(key(r), (m.get(key(r)) ?? 0) + 1), new Map());
-lines.push(`# mml pilot run: ${totalFiles} .mml files (${totalNs} already namespaced), mml 2.4.7\n`);
-lines.push("| suite | version | variant | files | pass | refused: doctype | refused by ts only | both refuse | mismatch |");
-lines.push("|---|---|---|---|---|---|---|---|---|");
-for (const suite of ALL_SUITES) for (const version of VERSIONS) for (const variant of Object.keys(variants)) {
-  const rows = everything.filter((r) => r.suite === suite && r.version === version && r.variant === variant);
-  if (rows.length === 0) continue;
-  const c = (o) => rows.filter((r) => r.outcome === o).length;
-  lines.push(`| ${suite} | v${version} | ${variant} | ${rows.length} | ${c("pass")} | ${c("refused")} | ${c("refused_by_ts_only")} | ${c("both_refuse")} | ${c("mismatch")} |`);
+// ---- report: reject overlapping or inconsistent saved runs before writing totals.
+writeReport();
+function writeReport() {
+  const names = readdirSync(outDir).filter((n) => /^results-.*\.json$/.test(n)).sort();
+  const parts = names.map((n) => JSON.parse(readFileSync(join(outDir, n), "utf8")));
+  const report = buildReport(parts);
+  const markdown = renderReport(report);
+  writeFileSync(join(outDir, "report.json"), JSON.stringify(report, null, 2) + "\n");
+  writeFileSync(join(outDir, "report.md"), markdown);
+  console.log(markdown);
 }
-lines.push("\n## Classes (outcome != pass), with one example each\n");
-const classes = new Map();
-for (const r of everything) {
-  if (r.outcome === "pass") continue;
-  const k = `${r.outcome} | ${r.cls}`;
-  const e = classes.get(k) ?? { n: 0, example: r };
-  e.n++; classes.set(k, e);
-}
-for (const [k, e] of [...classes].sort((a, b) => b[1].n - a[1].n)) {
-  lines.push(`- ${e.n}x ${k}\n    e.g. ${e.example.suite} v${e.example.version} ${e.example.variant} ${e.example.file}${e.example.detail ? `\n    ${e.example.detail.slice(0, 200)}` : ""}`);
-}
-const passRows = everything.filter((r) => r.outcome === "pass");
-const slow = [...everything].sort((a, b) => b.ms - a.ms).slice(0, 5);
-lines.push(`\nslowest TS parse+write+compare: ${slow.map((r) => `${r.ms}ms ${r.file}`).join("; ")}`);
-lines.push(`\npass: ${passRows.length}; byte-identical output among pass: ${passRows.filter((r) => r.checks.bytes).length}; data exact (no collapse): ${passRows.filter((r) => r.checks.dataExact).length}; tree exact including formatting whitespace: ${passRows.filter((r) => r.checks.treeExact).length}`);
-writeFileSync(join(outDir, "report.md"), lines.join("\n") + "\n");
-console.log(lines.join("\n"));
