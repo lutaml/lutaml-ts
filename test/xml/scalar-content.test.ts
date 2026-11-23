@@ -27,7 +27,15 @@ const bundle = { lml_bundle: 1, roots: [R, C], capabilities: ["xml"], value_type
 type Any = Record<string, any>;
 describe("single-valued text content around child elements", () => {
   let codecs: Any;
-  const setup = async (): Promise<Any> => (codecs ??= (await load(generateInto(bundle), "xml/index.ts"))["CODECS"]);
+  let absent: unknown;
+  const setup = async (): Promise<Any> => {
+    if (codecs === undefined) {
+      const loaded = await load(generateInto(bundle));
+      codecs = loaded["xml"].CODECS;
+      absent = loaded["ABSENT"];
+    }
+    return codecs;
+  };
 
   it("joins the pieces around unknown children and keeps one-piece, empty and element-only content", async () => {
     const c = (await setup())[R];
@@ -36,7 +44,18 @@ describe("single-valued text content around child elements", () => {
     expect((await c.parse("<r>one</r>")).content).toBe("one");
     expect((await c.parse("<r/>")).content).toBe("");
     const onlyMapped = await c.parse("<r><bold>b</bold></r>");
-    expect([onlyMapped.content, [...onlyMapped.bold]]).toEqual(["", ["b"]]);
+    expect([onlyMapped.content, [...onlyMapped.bold]]).toEqual([absent, ["b"]]);
+  });
+
+  // An unset property reads as the generated models' ABSENT marker (Maybe<T>), never undefined: that is the public no-value state.
+  it("reads an empty or layout-only list beside a declared child as no value, as Ruby writes nothing for it", async () => {
+    const c = (await setup())[R];
+    for (const xml of ["<r>\n  <bold>b</bold>\n</r>", "<r><!--x--><bold>b</bold></r>", "<r><![CDATA[a]]><bold>b</bold></r>"]) {
+      const m = await c.parse(xml);
+      expect([m.content, [...m.bold]], xml).toEqual([absent, ["b"]]);
+    }
+    const cdata = (await setup())[C];
+    expect((await cdata.parse("<c>t<x/></c>")).content).toBe(absent);
   });
 
   it("refuses text split around a DECLARED child by name (the source counterexample)", async () => {

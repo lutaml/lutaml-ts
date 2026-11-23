@@ -579,20 +579,21 @@ function logicalNodes(el: El, all: readonly Kid[]): LogicalNode[] {
 /**
  * The value of a single-valued content attribute, as canonical Ruby reads it (scripts/cdata_oracle.rb, 55 recorded rows).
  * An ordinary rule reads TEXT nodes only (CDATA is ignored) and joins them around unmapped children; a cdata: true rule
- * reads CDATA sections only (text is ignored). When the element has more than one child node and the rule's pieces must
- * stay a list (a declared child for an ordinary rule; any other node for cdata: true), Ruby holds an Array in the
- * :string attribute: an empty list is no value, a non-empty list cannot be represented by a typed string and is refused
- * by name. Returns null for "no value".
+ * reads CDATA sections only (text is ignored). Ruby holds an Array in the :string attribute when an ordinary rule sits
+ * beside a declared child, or a cdata: true rule has more than one child node. An empty or layout-only list is no value
+ * (Ruby writes nothing for it); any other list cannot be represented by a typed string and is refused by name.
+ * Returns null for "no value".
  */
 function scalarContent(spec: ModelSpec, el: El, all: readonly Kid[], children: readonly El[], content: ContentRule): string | null {
   const nodes = logicalNodes(el, all);
   const wanted = content.cdata === true ? KIND_CDATA : KIND_TEXT;
   const pieces = nodes.filter((n) => n.kind === wanted).map((n) => n.text);
   const listState =
-    nodes.length > 1 &&
-    (content.cdata === true || children.some((c) => spec.elems.some((r) => matchesElem(r, c)) || (spec.hooks ?? []).some((h) => h.kind === "element" && matchesElem(h, c))));
+    content.cdata === true
+      ? nodes.length > 1
+      : children.some((c) => spec.elems.some((r) => matchesElem(r, c)) || (spec.hooks ?? []).some((h) => h.kind === "element" && matchesElem(h, c)));
   if (!listState) return pieces.join("");
-  if (pieces.length === 0) return null;
+  if (pieces.length === 0 || (content.cdata !== true && pieces.every((p) => /^[ \t\r\n]*$/.test(p)))) return null;
   throw new XmlError(
     "invalid_document",
     "single-valued " + (content.cdata === true ? "cdata" : "text") + " content is held by Ruby as a list of " + pieces.length + " piece(s) here (" + nodes.length + " child nodes), which a string cannot represent",
