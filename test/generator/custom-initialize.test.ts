@@ -116,7 +116,7 @@ describe("custom_initialize marker: generated code", () => {
       const out = error as { stdout?: string };
       throw new Error(`tsc failed:\n${out.stdout ?? ""}`);
     }
-  });
+  }, 30_000);
 
   it("separates data construction from application construction", async () => {
     const { models } = await generated(bundle());

@@ -150,9 +150,7 @@ describe("generation with the xml:id binding", () => {
     expect(() => generateModelsWith(faceted, NONE, FACET_FREE_REFUSAL, { contractsModule: "./c.js" })).toThrow(/missing_type_binding/);
   });
 
-  // KNOWN GAP (reported, not weakened): the real facet-free xml:id value type with NO binding is generated as a
-  // plain string today instead of being refused. `it.fails` passes while the gap exists and goes red when fixed.
-  it.fails("an unbound facet-free xml:id is refused as missing_type_binding", () => {
+  it("an unbound facet-free xml:id is refused as missing_type_binding", () => {
     expect(() => generateModelsWith(fixture.bundle, NONE, FACET_FREE_REFUSAL, { contractsModule: "./c.js" })).toThrow(/missing_type_binding/);
   });
 });
