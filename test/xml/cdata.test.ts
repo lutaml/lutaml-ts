@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Bundle } from "../../src/contracts.js";
 import { LmlError } from "../../src/contracts.js";
-import { generateInto, infoOf, load } from "./harness.js";
+import { generateInto, load } from "./harness.js";
 import { createXmlEmitter } from "../../src/xml/index.js";
 
 // CDATA output (cdata: true on content and element rules) goes through the document's createCData constructor: literal
