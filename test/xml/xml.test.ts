@@ -133,6 +133,9 @@ const OVERRIDES: Record<string, Override> = {
   // Ruby keeps the first of a repeated single-valued element; the TS reader refuses it (REVIEW-TS-1 L6).
   "person-alias-both-first-wins": { error: "invalid_document" },
   "person-scalar-duplicate-first-wins": { error: "invalid_document" },
+  // The recorded value predates canonical Ruby e4439b37 (probe: <name>text<![CDATA[..]]></name> reads nil there; the
+  // cdata oracle row OrdinaryElement/plain_then_cdata): an ordinary element rule holds nothing for several child nodes.
+  "person-entities-and-cdata": { data: { id: null, lang: null, name: null, nick: null, tags: null, addr: null, age: null, ni: null, nb: null, ee: null } },
   // Ruby falls back to the declared type for an unknown discriminator value.
   "kennel-poly-unknown-kind": { error: "unknown_discriminator" },
 };
@@ -153,7 +156,7 @@ describe("emitter output", () => {
     const codecs = xmlEmitter.emit(oracle.bundle, NONE).get("xml/codecs.ts") ?? "";
     for (const name of ["Person", "Plain", "Para", "Ord", "Kennel", "Animal", "Dog", "Addr"]) {
       expect(codecs, name).toMatch(new RegExp(`export function read\\w*${name}\\(`));
-      expect(codecs, name).toMatch(new RegExp(`export function write\\w*${name}\\(`));
+      expect(codecs, name).toMatch(new RegExp(`export (async )?function write\\w*${name}\\(`));
     }
   });
 });
@@ -336,12 +339,6 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
         if (c.expected_data === undefined || OVERRIDES[c.id] !== undefined) continue;
         const codec = mod["xml"].CODECS[c.model_id];
         const value = await codec.parse(c.input);
-        if (c.id === "para-cdata-token") {
-          const info = await infoOf(() => codec.stringify(value));
-          expect(info?.reason, c.id).toBe("unsupported_mapping");
-          expect(info?.detail).toMatch(/CDATA/);
-          continue;
-        }
         const text: string = await codec.stringify(value);
         // as_nil / as_blank write an empty element for a nil member, which reads back as "";
         // an empty-string member under the default empty policy is omitted and reads back as nil (as in Ruby's own to_xml).
@@ -389,10 +386,10 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
       expect(text).toBe("<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>");
     });
 
-    it("refuses CDATA output by name instead of dropping it", async () => {
+    it("writes a parsed CDATA token back as a CDATA section (never dropped, never escaped text)", async () => {
       const codec = mod["xml"].CODECS["XmlOracle::Para@default"];
-      const info = await infoOf(async () => codec.stringify(await codec.parse("<p>a<![CDATA[raw]]></p>")));
-      expect(info).toMatchObject({ reason: "unsupported_mapping", format: "xml", model_id: "XmlOracle::Para@default" });
+      const out = await codec.stringify(await codec.parse("<p>a<![CDATA[raw<&>]]></p>"));
+      expect(out).toBe("<p>a<![CDATA[raw<&>]]></p>");
     });
   });
 });
@@ -736,7 +733,8 @@ describe.skipIf(!available)("reader limits and strictness (REVIEW-TS-1 H1, L6)",
     expect((await c.parse(tree, { limits: { maxElements: 100 } })).kids).toHaveLength(5);
     const cdata = "<n>" + "<![CDATA[a]]>".repeat(20) + "</n>";
     expect((await infoOf(() => c.parse(cdata, { limits: { maxCdata: 10 } })))).toMatchObject({ reason: "invalid_document", rule: "max_cdata_nodes" });
-    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("a".repeat(20));
+    // admitted by the raised limit; an ordinary content rule ignores CDATA (canonical Ruby), so the value is empty
+    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("");
   });
 
   it("a wide CDATA run is refused by default, not read at quadratic cost", { timeout: 180_000 }, async () => {

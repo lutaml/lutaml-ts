@@ -39,8 +39,11 @@ describe("L7: deep recursion is a named LmlError, not RangeError", () => {
 describe("L8: a __proto__ hash default survives the codec as an own key", () => {
   it("encodes the own __proto__ key", async () => {
     const { models, json } = await generated(node(), { json: true });
-    const a = new models["A"]();
-    expect(Object.keys(a.h)).toContain("__proto__");
+    const applied = new models["A"]();
+    expect(Object.keys(applied.h)).toContain("__proto__");
+    // an applied default is not written; the same hash given explicitly is, with its own __proto__ key
+    expect(json?.["CODECS"]["A@default"].stringify(applied)).toBe("{}");
+    const a = new models["A"]({ h: applied.h });
     expect(json?.["CODECS"]["A@default"].stringify(a)).toContain('"__proto__":{"polluted":1}');
     expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
   });

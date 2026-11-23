@@ -57,8 +57,8 @@ describe("contract bootstrap", () => {
   });
 
   it("lists every contract error code once", () => {
-    expect(ERROR_CODES).toHaveLength(21);
-    expect(new Set(ERROR_CODES).size).toBe(21);
+    expect(ERROR_CODES).toHaveLength(22);
+    expect(new Set(ERROR_CODES).size).toBe(22);
   });
 
   it("keeps absent distinct from null", () => {
