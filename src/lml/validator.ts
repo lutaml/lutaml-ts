@@ -483,15 +483,18 @@ function ruleV2(rule: Tree | undefined, at: string, id: string, format: string):
   if (has(rule, "key")) expectArray(rule["key"], `${at}/key`);
   if (has(rule, "render")) render(rule["render"], `${at}/render`, id, format);
   if (has(rule, "discriminator")) discriminatorShape(rule["discriminator"], `${at}/discriminator`, id);
-  if (has(rule, "custom")) customSerialization(rule["custom"], `${at}/custom`, id, format);
+  if (has(rule, "custom")) customSerialization(rule["custom"], `${at}/custom`, id, format, kind);
 }
 
 const HOOK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** Optional per-rule hook names (key-value formats only); bodies never travel in a document. */
-function customSerialization(node: Tree | undefined, at: string, id: string, format: string): void {
-  if (format === "xml") {
-    fail("unsupported_mapping", "custom serialization hooks are not supported on xml rules", at, { model_id: id, format });
+/** XML rule kinds that may carry hook names; any_attribute, sequence and choice may not. */
+const XML_HOOK_KINDS = ["content", "element", "attribute"];
+
+/** Optional per-rule hook names; bodies never travel in a document. */
+function customSerialization(node: Tree | undefined, at: string, id: string, format: string, kind?: Tree): void {
+  if (format === "xml" && !(typeof kind === "string" && XML_HOOK_KINDS.includes(kind))) {
+    fail("unsupported_mapping", `custom serialization hooks are not supported on xml ${describe(kind)} rules`, at, { model_id: id, format });
   }
   if (!isObj(node) || Object.keys(node).length === 0) {
     fail("invalid_document", "custom must be a non-empty object of hook names", at, { model_id: id, format });
@@ -513,31 +516,33 @@ function customSerialization(node: Tree | undefined, at: string, id: string, for
   }
 }
 
-/** A hook name has one direction per model, across every rule and format. */
+/** A hook name has one direction and one signature kind (key-value or xml) per model, across every rule and format. */
 function hookDirections(mappings: Tree | undefined, at: string, id: string): void {
   if (!isObj(mappings)) return;
   const seen = new Map<string, string>();
-  const visit = (rules: readonly Tree[], loc: string): void => {
+  const visit = (rules: readonly Tree[], loc: string, signature: string): void => {
     rules.forEach((rule, i) => {
       if (!isObj(rule)) return;
-      if (Array.isArray(rule["members"])) visit(rule["members"] as readonly Tree[], `${loc}/${i}/members`);
+      if (Array.isArray(rule["members"])) visit(rule["members"] as readonly Tree[], `${loc}/${i}/members`, signature);
       const custom = rule["custom"];
       if (!isObj(custom)) return;
       for (const direction of ["to", "from"]) {
         const name = custom[direction];
         if (typeof name !== "string") continue;
         const before = seen.get(name);
-        if (before !== undefined && before !== direction) {
-          fail("invalid_document", `hook ${name} is used as both a read and a write hook`, `${loc}/${i}/custom/${direction}`, { model_id: id });
+        const now = `${direction}:${signature}`;
+        if (before !== undefined && before !== now) {
+          const what = before.split(":")[0] !== direction ? "both a read and a write hook" : "both a key-value and an xml hook";
+          fail("invalid_document", `hook ${name} is used as ${what}`, `${loc}/${i}/custom/${direction}`, { model_id: id });
         }
-        seen.set(name, direction);
+        seen.set(name, now);
       }
     });
   };
   for (const format of Object.keys(mappings)) {
     const mapping = mappings[format];
     if (isObj(mapping) && Array.isArray(mapping["rules"])) {
-      visit(mapping["rules"] as readonly Tree[], `${at}/mappings${pointer(format)}/rules`);
+      visit(mapping["rules"] as readonly Tree[], `${at}/mappings${pointer(format)}/rules`, format === "xml" ? "xml" : "kv");
     }
   }
 }

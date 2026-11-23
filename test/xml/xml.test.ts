@@ -153,7 +153,7 @@ describe("emitter output", () => {
     const codecs = xmlEmitter.emit(oracle.bundle, NONE).get("xml/codecs.ts") ?? "";
     for (const name of ["Person", "Plain", "Para", "Ord", "Kennel", "Animal", "Dog", "Addr"]) {
       expect(codecs, name).toMatch(new RegExp(`export function read\\w*${name}\\(`));
-      expect(codecs, name).toMatch(new RegExp(`export function write\\w*${name}\\(`));
+      expect(codecs, name).toMatch(new RegExp(`export (async )?function write\\w*${name}\\(`));
     }
   });
 });

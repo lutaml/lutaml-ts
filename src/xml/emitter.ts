@@ -3,6 +3,7 @@ import type {
   AttributeSpec,
   Bindings,
   Bundle,
+  CustomSerialization,
   Emitter,
   ErrorDetail,
   ModelDocument,
@@ -30,7 +31,8 @@ const STRING_FAMILY = new Set(["string", "token", "uri", "email", "hostname", "i
   "email_address", "ip_v4_address", "ip_v6_address", "uuid", "reference", "uri_reference", "date_with_timezone", "date_time_with_timezone", "day_time_duration", "year_month_duration"]);
 const EXACT_BUILTINS = new Set(["decimal", "rational"]);
 const MAPPING_KEYS = new Set(["root", "namespace", "rules", "ordered", "mixed_content", "sequence"]);
-const RULE_KEYS = new Set(["kind", "name", "to", "namespace", "prefix", "cdata", "render", "discriminator"]);
+const RULE_KEYS = new Set(["kind", "name", "to", "namespace", "prefix", "cdata", "render", "discriminator", "custom"]);
+const HOOK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function byCodePoint(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -55,6 +57,24 @@ class Refusal {
       ...(rule === undefined ? {} : { rule }),
     });
   }
+}
+
+/** Strictly validated hook names of one rule (the emitter does not trust that a bundle was validated). */
+function customOf(rule: XmlRule, refuse: Refusal): CustomSerialization | undefined {
+  if (rule.custom === undefined) return undefined;
+  const at = rule.to ?? rule.name?.[0];
+  const node = rule.custom as unknown;
+  if (typeof node !== "object" || node === null || Array.isArray(node) || Object.keys(node).length === 0) {
+    refuse.raise("invalid_document", "custom must be a non-empty object of hook names", at);
+  }
+  const names = node as { readonly [key: string]: unknown };
+  for (const key of Object.keys(names)) {
+    if (key !== "to" && key !== "from") refuse.raise("invalid_document", `unknown custom key ${key}`, at);
+    const name = names[key];
+    if (typeof name !== "string" || !HOOK_NAME.test(name)) refuse.raise("invalid_document", `custom ${key} must match ${HOOK_NAME.source}`, at);
+  }
+  if (names["to"] !== undefined && names["to"] === names["from"]) refuse.raise("invalid_document", "custom to and from must differ", at);
+  return rule.custom;
 }
 
 /** A scalar wire form: reader expression over (text, el), writer expression over a value. */
@@ -196,7 +216,17 @@ function checkNamespace(spec: NamespaceSpec | undefined, refuse: Refusal, rule?:
   refuse.raise("invalid_document", `namespace ${q(spec)} is not one of inherit, unqualified, uri`, undefined, rule);
 }
 
+/** One named handwritten hook of a model, for its typed interface. */
+interface HookDecl {
+  readonly name: string;
+  readonly direction: "read" | "write";
+  readonly kind: XmlRule["kind"];
+  /** Declared attribute a read hook supplies; null for a hook-only rule. */
+  readonly to: string | null;
+}
+
 interface ModelPlan {
+  readonly hooks: readonly HookDecl[];
   readonly reader: string;
   readonly writer: string;
   readonly codec: string;
@@ -223,6 +253,9 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   const seen = new Set<string>();
   const readAttrs: string[] = [];
   const claimedAttrs: string[] = [];
+  const readHooks: string[] = [];
+  const hookDecls: HookDecl[] = [];
+  const writeHooks: string[] = [];
   const readElems: string[] = [];
   const writeAttrs: string[] = [];
   const writeElems: string[] = [];
@@ -238,35 +271,53 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
         if (key !== "kind" && key !== "to") refuse.unsupported(`any_attribute carries only kind and to, not ${key}`, rule.to);
       }
       if (anyAttribute !== null) refuse.unsupported("at most one any_attribute rule per mapping", rule.to);
-      const target = attrs.get(rule.to);
+      if (rule.to === undefined) refuse.raise("dangling_reference", "any_attribute needs a declared hash attribute");
+      const target = attrs.get(rule.to as string);
       if (target === undefined) refuse.raise("dangling_reference", `any_attribute maps unknown attribute ${rule.to}`, rule.to);
       const targetType = (target as AttributeSpec).type;
       if (targetType.kind !== "builtin" || targetType.name !== "hash" || ((target as AttributeSpec).collection ?? false) !== false) {
         refuse.unsupported("any_attribute needs a non-collection hash attribute", rule.to);
       }
-      anyAttribute = rule.to;
+      anyAttribute = rule.to as string;
       continue;
     }
     for (const key of Object.keys(rule)) {
       if (!RULE_KEYS.has(key)) refuse.unsupported(`rule-level ${key} is not supported`, rule.to);
     }
-    const attr = attrs.get(rule.to);
-    if (attr === undefined) refuse.raise("dangling_reference", `rule maps unknown attribute ${rule.to}`, rule.to);
+    const custom = customOf(rule, refuse);
+    const hookOnly = rule.to === undefined;
+    if (hookOnly && custom === undefined) refuse.raise("dangling_reference", "a rule without custom hooks needs a declared attribute", rule.name?.[0]);
+    if (custom !== undefined && (ordered || mixed)) {
+      refuse.raise("imperative_element_order", "a handwritten hook cannot drive an ordered or mixed mapping", rule.to ?? rule.name?.[0]);
+    }
+    // custom.from replaces the ordinary read of its rule; custom.to replaces the ordinary write. A hook-only rule has
+    // no ordinary form, so an absent direction fails by name when it is reached.
+    const readHooked = custom !== undefined && (hookOnly || custom.from !== undefined);
+    const writeHooked = custom !== undefined && (hookOnly || custom.to !== undefined);
+    if (readHooked && custom?.from !== undefined) hookDecls.push({ name: custom.from, direction: "read", kind: rule.kind, to: rule.to ?? null });
+    if (writeHooked && custom?.to !== undefined) hookDecls.push({ name: custom.to, direction: "write", kind: rule.kind, to: rule.to ?? null });
+    const attr = hookOnly ? undefined : attrs.get(rule.to as string);
+    if (!hookOnly && attr === undefined) refuse.raise("dangling_reference", `rule maps unknown attribute ${rule.to}`, rule.to);
     const spec = attr as AttributeSpec;
-    const key = `${rule.kind}:${rule.to}`;
+    const key = hookOnly ? `${rule.kind}::${rule.name?.[0] ?? "content"}` : `${rule.kind}:${rule.to}`;
     if (seen.has(key)) refuse.unsupported("several rules on one attribute", rule.to);
     seen.add(key);
     checkNamespace(rule.namespace, refuse, rule.name?.[0]);
-    const policy = policyOf(rule, refuse);
-    const collection = ((spec as Partial<AttributeSpec>).collection ?? false) !== false;
+    const policy = hookOnly ? { nil: "omit", empty: "omit" } : policyOf(rule, refuse);
+    const collection = hookOnly ? false : ((spec as Partial<AttributeSpec>).collection ?? false) !== false;
+    const hookTo = hookOnly ? "null" : q(rule.to);
+    const hookFrom = q(custom?.from ?? null);
+    const hookName = q(custom?.to ?? null);
 
     if (rule.kind === "content") {
       if (contentSeen) refuse.unsupported("several content rules", rule.to);
       contentSeen = true;
-      scalarOf(ctx, spec, refuse);
-      readContent = `{ to: ${q(rule.to)}, collection: ${collection} }`;
-      writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true} }`;
-      if (rule.cdata === true) writerRefusals.push(`content rule ${rule.to} is cdata`);
+      if (!hookOnly) scalarOf(ctx, spec, refuse);
+      if (readHooked) readHooks.push(`    { kind: "content", names: [], ns: ${acceptList([null])}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
+      else readContent = `{ to: ${q(rule.to)}, collection: ${collection} }`;
+      if (writeHooked) writeHooks.push(`    { kind: "content", rule: "content", name: ${hookName} },`);
+      else writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true} }`;
+      if (rule.cdata === true && !writeHooked) writerRefusals.push(`content rule ${rule.to} is cdata`);
       continue;
     }
     if (!Array.isArray(rule.name) || rule.name.length === 0 || rule.name.some((n) => typeof n !== "string" || n === "")) {
@@ -278,27 +329,33 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
 
     if (rule.kind === "attribute") {
       if (collection) refuse.unsupported("a collection cannot be one XML attribute", rule.to, first);
-      const scalar = scalarOf(ctx, spec, refuse);
+      const scalar = hookOnly ? undefined : scalarOf(ctx, spec, refuse);
       const uri = rule.namespace?.mode === "uri" ? rule.namespace.uri : null;
       const prefix = rule.prefix ?? (rule.namespace?.mode === "uri" ? rule.namespace.prefix ?? null : null);
-      if (uri !== null && prefix === null) {
+      if (uri !== null && prefix === null && !writeHooked) {
         writerRefusals.push(`attribute ${first} is in namespace ${uri} but declares no prefix`);
       }
       claimedAttrs.push(...names);
-      readAttrs.push(`    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${acceptList([uri])}, dec: ${scalar.dec} },`);
-      writeAttrs.push(
-        `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${nsOut(uri, prefix)}, enc: ${scalar.enc}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,
-      );
+      if (readHooked) readHooks.push(`    { kind: "attribute", names: ${q(names)}, ns: ${acceptList([uri])}, to: ${hookTo}, collection: false, from: ${hookFrom} },`);
+      else readAttrs.push(`    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${acceptList([uri])}, dec: ${(scalar as Scalar).dec} },`);
+      if (writeHooked) writeHooks.push(`    { kind: "attribute", rule: ${q(first)}, name: ${hookName} },`);
+      else {
+        writeAttrs.push(
+          `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${nsOut(uri, prefix)}, enc: ${(scalar as Scalar).enc}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,
+        );
+      }
       continue;
     }
 
     // element rule
-    const disc = effectiveDiscriminator(doc, spec, id);
-    let dec: string;
+    const disc = hookOnly ? undefined : effectiveDiscriminator(doc, spec, id);
+    let dec = "null";
     let child: string | null = null;
     let enc: string | null = null;
     let target: NsInfo = own;
-    if (spec.type.kind === "model") {
+    if (hookOnly) {
+      // no declared attribute: the hooks are the whole rule
+    } else if (spec.type.kind === "model") {
       const modelId = spec.type.id;
       target = ctx.modelNs(modelId);
       if (ctx.mapping(modelId) === undefined) {
@@ -355,12 +412,16 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       accept = acceptList(target.uri === null ? [null] : [target.uri, null]);
       out = nsOut(target.uri, target.prefix);
     }
-    if (rule.cdata === true) writerRefusals.push(`rule ${first} is cdata`);
-    readElems.push(
-      `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}, dec: ${dec} },`,
-    );
+    if (rule.cdata === true && !writeHooked) writerRefusals.push(`rule ${first} is cdata`);
+    if (readHooked) readHooks.push(`    { kind: "element", names: ${q(names)}, ns: ${accept}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
+    else {
+      readElems.push(
+        `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}, dec: ${dec} },`,
+      );
+    }
+    const hookField = writeHooked ? `, hook: { name: ${hookName} }` : "";
     writeElems.push(
-      `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,
+      `    { to: ${q(rule.to ?? "")}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${hookField} },`,
     );
   }
 
@@ -376,6 +437,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     `  any: ${anyAttribute === null ? "null" : q({ to: anyAttribute, claimed: [...new Set(claimedAttrs)].sort(byCodePoint) })},`,
     "  elems: [", ...readElems, "  ],",
     `  content: ${readContent},`,
+    ...(readHooks.length === 0 ? [] : ["  hooks: [", ...readHooks, "  ],"]),
     "};",
   ];
   const refusal = writerRefusals.length === 0 ? "null" : q(`unsupported XML writer mapping: ${writerRefusals.join("; ")}`);
@@ -386,6 +448,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     `  any: ${q(anyAttribute)},`,
     "  elems: [", ...writeElems, "  ],",
     `  content: ${writeContent},`,
+    ...(writeHooks.length === 0 ? [] : ["  hooks: [", ...writeHooks, "  ],"]),
     "};",
   ];
   const reader = [
@@ -396,7 +459,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   ].join("\n");
   const writer = [
     ...writeSpec, "",
-    `export function write${cls}(w: x.Writer, host: Node | null, v: m.${cls}, name: string, ns: x.NsOut | null) {`,
+    `export async function write${cls}(w: x.Writer, host: Node | null, v: m.${cls}, name: string, ns: x.NsOut | null): Promise<Node> {`,
     `  return x.writeModel(w, WSPEC_${cls}, v, name, ns, host);`,
     "}", "",
   ].join("\n");
@@ -405,7 +468,35 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     `export const codec${cls} = x.xmlCodec<m.${cls}>(RSPEC_${cls}, read${cls}, ` +
     (root === null ? "null" : `(w, v) => write${cls}(w, null, v, ${q(root)}, ${rootNs})`) +
     ");\n";
-  return { reader, writer, codec };
+  return { reader, writer, codec, hooks: hookDecls };
+}
+
+/** The typed handwritten-hook interface of one model: the static consumer API. */
+function hookInterface(cls: string, hooks: readonly HookDecl[]): string {
+  const lines = [`export interface ${cls}Hooks<S = unknown> {`];
+  const done = new Set<string>();
+  for (const hook of hooks) {
+    if (done.has(hook.name)) continue;
+    done.add(hook.name);
+    if (hook.direction === "write") {
+      lines.push(
+        `  /** WRITE hook (model, parent element, builder, state): writes the whole output of its ${hook.kind} rule through document operations. */`,
+        `  readonly ${hook.name}?: (model: m.${cls}, parent: Node, builder: x.XmlWriteBuilder, state: S) => void | Promise<void>;`,
+      );
+    } else if (hook.to !== null) {
+      lines.push(
+        `  /** READ hook (value text, state, context): returns the declared ${hook.to} value, validated by the model constructor; undefined leaves it unset. */`,
+        `  readonly ${hook.name}?: (value: string, state: S, context: x.XmlReadContext) => m.${cls}Init[${q(hook.to)}] | undefined;`,
+      );
+    } else {
+      lines.push(
+        `  /** READ hook (model, value text, state, context): runs after construction; the application state is its only output. */`,
+        `  readonly ${hook.name}?: (model: m.${cls}, value: string, state: S, context: x.XmlReadContext) => void;`,
+      );
+    }
+  }
+  lines.push("}", "");
+  return lines.join("\n");
 }
 
 /**
@@ -431,13 +522,20 @@ export function createXmlEmitter(options: XmlEmitterOptions = {}): Emitter {
       const ctx = new Context(bundle, bindings, classNames);
       const parts: ModelPlan[] = [];
       const registry: string[] = [];
+      const hookTypes: string[] = [];
+      const hookTable: string[] = [];
       for (const id of ids) {
         const doc = bundle.models[id];
         const mapping = ctx.mapping(id);
         const cls = classNames.get(id);
         if (doc === undefined || mapping === undefined || cls === undefined) continue;
-        parts.push(emitModel(ctx, id, doc, cls, mapping));
+        const plan = emitModel(ctx, id, doc, cls, mapping);
+        parts.push(plan);
         registry.push(`  ${q(id)}: codec${cls},`);
+        if (plan.hooks.length > 0) {
+          hookTypes.push(hookInterface(cls, plan.hooks));
+          hookTable.push(`  readonly ${q(id)}?: ${cls}Hooks<S>;`);
+        }
       }
       const body =
         parts.length === 0
@@ -452,15 +550,40 @@ export function createXmlEmitter(options: XmlEmitterOptions = {}): Emitter {
               ...ctx.tables,
               ...(ctx.tables.length > 0 ? [""] : []),
               ...parts.flatMap((p) => [p.reader, p.writer, p.codec]),
+              ...hookTypes,
+              ...(hookTypes.length === 0
+                ? []
+                : [
+                    "/** Trusted handwritten hook implementations by model ID. */",
+                    "export interface CodecHooks<S = unknown> {",
+                    ...hookTable,
+                    "}",
+                    "",
+                  ]),
               "/** Every codec by model ID. */",
               "export const CODECS = {",
               ...registry,
               "} as const;",
               "",
+              ...(hookTypes.length === 0
+                ? []
+                : [
+                    "/**",
+                    " * Every codec bound to the handwritten hooks and explicit application state. Each operation of a bound",
+                    " * codec carries them itself (no ambient scope), so concurrent operations never share hooks or state; a",
+                    " * hook that is not installed fails by name (custom_serialization) only when its rule is reached.",
+                    " */",
+                    "export function withHooks<S>(hooks: CodecHooks<S>, state: S): typeof CODECS {",
+                    "  return {",
+                    ...parts.map((_p, i) => `    ${registry[i]?.trim().replace(/: codec(\w+),$/, (_m, c: string) => `: codec${c}.bind(hooks, state),`)}`),
+                    "  } as typeof CODECS;",
+                    "}",
+                    "",
+                  ]),
             ];
       return new Map([
         ["xml/codecs.ts", body.join("\n")],
-        ["xml/index.ts", [HEADER, 'export * from "./codecs.js";', 'export { XmlError, xmlCodec } from "./runtime.js";', 'export type { XmlCodec, El } from "./runtime.js";', ""].join("\n")],
+        ["xml/index.ts", [HEADER, 'export * from "./codecs.js";', 'export { XmlError, xmlCodec } from "./runtime.js";', 'export type { XmlCodec, El, ReadOptions, WriteOptions, XmlReadContext, XmlWriteBuilder, XmlNode, XmlDocument } from "./runtime.js";', ""].join("\n")],
         ["xml/runtime.ts", xmlRuntimeSource(contracts)],
       ]);
     },

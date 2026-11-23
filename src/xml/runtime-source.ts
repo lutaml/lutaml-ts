@@ -23,6 +23,7 @@ import { ValidationError } from "../runtime.js";
 import { LmlError } from @@CONTRACTS@@;
 import type { ErrorCode, ErrorDetail } from @@CONTRACTS@@;
 
+export type { Document as XmlDocument, Node as XmlNode };
 export type Rec = { readonly [key: string]: unknown };
 export type Policy = "omit" | "as_nil" | "as_empty" | "as_blank";
 
@@ -124,6 +125,16 @@ export interface ReadLimits {
 
 export interface ReadOptions {
   readonly limits?: Partial<ReadLimits>;
+  /** Trusted handwritten hooks by model ID, installed for this one operation (never ambient). */
+  readonly hooks?: object | undefined;
+  /** The explicit application state handed to every hook of this operation. */
+  readonly state?: unknown;
+}
+
+/** Hooks and state of ONE read or write operation; carried by the operation, never by a global. */
+export interface WriteOptions {
+  readonly hooks?: object | undefined;
+  readonly state?: unknown;
 }
 
 export const DEFAULT_LIMITS: ReadLimits = { maxElements: 20_000, maxChildren: 1_000, maxCdata: 1_000 };
@@ -131,6 +142,8 @@ export const DEFAULT_LIMITS: ReadLimits = { maxElements: 20_000, maxChildren: 1_
 /** Per-read state shared by every El of one document. */
 interface Ctx {
   readonly limits: ReadLimits;
+  readonly hooks: object | undefined;
+  readonly state: unknown;
   elements: number;
   cdata: number;
 }
@@ -143,6 +156,8 @@ function newCtx(options: ReadOptions | undefined): Ctx {
       maxChildren: given.maxChildren ?? DEFAULT_LIMITS.maxChildren,
       maxCdata: given.maxCdata ?? DEFAULT_LIMITS.maxCdata,
     },
+    hooks: options?.hooks,
+    state: options?.state,
     elements: 0,
     cdata: 0,
   };
@@ -290,6 +305,36 @@ export interface ModelSpec {
   readonly any: { readonly to: string; readonly claimed: readonly string[] } | null;
   readonly elems: readonly ElemRule[];
   readonly content: ContentRule | null;
+  /** Rules whose read is a handwritten hook (custom.from) or has no declared target (hook-only). */
+  readonly hooks?: readonly RHook[];
+}
+
+/** One rule read by a handwritten hook. */
+export interface RHook {
+  readonly kind: "attribute" | "element" | "content";
+  readonly names: readonly string[];
+  readonly ns: Accept;
+  /** Declared attribute the hook supplies (a typed patch before construction); null for a hook-only rule. */
+  readonly to: string | null;
+  readonly collection: boolean;
+  /** The read hook name; null when only the other direction is declared. */
+  readonly from: string | null;
+}
+
+/** A read-only view of the element a hook was reached for. */
+export interface XmlElementView {
+  readonly name: string;
+  readonly namespaceUri: string;
+  attribute(name: string): string | undefined;
+  text(): string;
+}
+
+/** Context handed to a read hook. */
+export interface XmlReadContext {
+  readonly modelId: string;
+  readonly rule: string;
+  readonly location: string;
+  readonly element: XmlElementView;
 }
 
 type Token =
@@ -437,7 +482,76 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
     }
   }
   if (spec.tokens) setOwn(init, ORDERED_MEMBER, tokens);
-  return build(cls, init, spec, el.loc);
+  if (spec.hooks === undefined) return build(cls, init, spec, el.loc);
+  const after: Array<(model: T) => void> = [];
+  runReadHooks(el, spec, init, all, children, after as Array<(model: unknown) => void>);
+  const model = build(cls, init, spec, el.loc);
+  for (const call of after) call(model);
+  return model;
+}
+
+type HookFn = (...args: never[]) => unknown;
+
+/** The installed handler for one hook name of one model, or a named custom_serialization failure. */
+function hookFn(table: object | undefined, modelId: string, name: string | null, direction: "read" | "write", rule: string, loc: string): HookFn {
+  const forModel = table === undefined || !Object.hasOwn(table, modelId) ? undefined : (table as Rec)[modelId];
+  const fn =
+    name === null || typeof forModel !== "object" || forModel === null || !Object.hasOwn(forModel, name) ? undefined : (forModel as Rec)[name];
+  if (typeof fn === "function") return fn as HookFn;
+  const what = name === null ? "no " + direction + " hook is declared for this rule" : "the handwritten " + direction + " hook " + name + " is not installed";
+  throw new XmlError("custom_serialization", what + " (custom_serialization); install it for this operation with the codec's hooks", loc).context(modelId, undefined, rule);
+}
+
+function viewOf(el: El): XmlElementView {
+  return {
+    name: el.node.localName() ?? "",
+    namespaceUri: nsOf(el),
+    attribute: (name) => el.node.getAttribute(name),
+    text: () => textOf(el, true),
+  };
+}
+
+/**
+ * Runs the handwritten read hooks of one element. A hook for a declared attribute runs BEFORE construction and returns
+ * the declared value (a typed patch, validated by the model constructor); a hook-only rule runs after construction
+ * with the model. Nothing is evaluated from the document and a missing hook fails by name only when its rule is reached.
+ */
+function runReadHooks(
+  el: El,
+  spec: ModelSpec,
+  init: Record<string, unknown>,
+  all: readonly Kid[],
+  children: readonly El[],
+  after: Array<(model: unknown) => void>,
+): void {
+  for (const hook of spec.hooks ?? []) {
+    const rule = hook.kind === "content" ? "content" : (hook.names[0] ?? "");
+    const hits: Array<{ readonly value: string; readonly at: El }> = [];
+    if (hook.kind === "attribute") {
+      const raw = attributeOf(el, hook.names, hook.ns);
+      if (raw !== null) hits.push({ value: raw, at: el });
+    } else if (hook.kind === "element") {
+      for (const child of children) if (matchesElem(hook, child)) hits.push({ value: textOf(child, true), at: child });
+    } else if (hook.to !== null || all.some((k) => k.kind === KIND_TEXT || k.kind === KIND_CDATA)) {
+      hits.push({ value: textOf(el, true), at: el });
+    }
+    if (hook.to !== null && !hook.collection && hits.length > 1) {
+      throw new XmlError("invalid_document", "element " + rule + " occurs more than once but maps a single value", (hits[1] as { at: El }).at.loc).context(spec.id, hook.to, rule);
+    }
+    const supplied: unknown[] = [];
+    for (const hit of hits) {
+      const fn = hookFn(el.ctx.hooks, spec.id, hook.from, "read", rule, hit.at.loc);
+      const context: XmlReadContext = { modelId: spec.id, rule, location: hit.at.loc, element: viewOf(hit.at) };
+      if (hook.to !== null) {
+        const out = withContext(spec, hook.to, rule, hit.at.loc, () => (fn as (v: string, s: unknown, c: XmlReadContext) => unknown)(hit.value, el.ctx.state, context));
+        if (out !== undefined) supplied.push(out);
+      } else {
+        const state = el.ctx.state;
+        after.push((model) => (fn as (m: unknown, v: string, s: unknown, c: XmlReadContext) => void)(model, hit.value, state, context));
+      }
+    }
+    if (hook.to !== null && supplied.length > 0) setOwn(init, hook.to, hook.collection ? supplied : supplied[0]);
+  }
 }
 
 function lacksText(all: readonly Kid[], children: readonly El[], spec: ModelSpec): boolean {
@@ -712,39 +826,51 @@ export interface XmlCodec<T> {
   /** Parses XML text (async: the engine initialises lazily), then decodes it. */
   parse(text: string, options?: ReadOptions): Promise<T>;
   /** Writes a new document for the value. */
-  encode(value: T): Promise<Document>;
+  encode(value: T, options?: WriteOptions): Promise<Document>;
   /** Compact XML text of encode(value). */
-  stringify(value: T): Promise<string>;
+  stringify(value: T, options?: WriteOptions): Promise<string>;
+  /**
+   * A codec bound to trusted handwritten hooks and explicit application state. Every operation of the returned codec
+   * carries them itself (no ambient scope), so concurrent operations with different hooks or state never mix.
+   */
+  bind(hooks: object, state: unknown): XmlCodec<T>;
 }
 
 export function xmlCodec<T>(
   spec: ModelSpec,
   read: (el: El) => T,
-  write: ((w: Writer, value: T) => Node) | null,
+  write: ((w: Writer, value: T) => Promise<Node>) | null,
 ): XmlCodec<T> {
   const modelId = spec.id;
-  const decode = (doc: Document, options?: ReadOptions): T => run(modelId, () => read(rootEl(doc, spec, options)));
-  const encode = (value: T): Promise<Document> =>
-    runAsync(modelId, async () => {
-      if (write === null) throw new XmlError("unsupported_mapping", "model has no root element mapping").context(modelId);
-      const doc = await createDocument();
-      const w: Writer = { doc, scopes: new WeakMap() };
-      const root = write(w, value);
-      doc.setRoot(root);
-      return doc;
-    });
-  return {
-    modelId,
-    format: "xml",
-    decode,
-    async parse(text, options) {
-      return decode(await runAsync(modelId, () => parseText(text)), options);
-    },
-    encode,
-    async stringify(value) {
-      return (await encode(value)).toXml();
-    },
+  const make = (bound: WriteOptions): XmlCodec<T> => {
+    const readOptions = (options?: ReadOptions): ReadOptions => ({ ...options, hooks: options?.hooks ?? bound.hooks, state: options?.state ?? bound.state });
+    const writeOptions = (options?: WriteOptions): WriteOptions => ({ hooks: options?.hooks ?? bound.hooks, state: options?.state ?? bound.state });
+    const decode = (doc: Document, options?: ReadOptions): T => run(modelId, () => read(rootEl(doc, spec, readOptions(options))));
+    const encode = (value: T, options?: WriteOptions): Promise<Document> =>
+      runAsync(modelId, async () => {
+        if (write === null) throw new XmlError("unsupported_mapping", "model has no root element mapping").context(modelId);
+        const doc = await createDocument();
+        const given = writeOptions(options);
+        const w: Writer = { doc, scopes: new WeakMap(), hooks: given.hooks, state: given.state };
+        const root = await write(w, value);
+        doc.setRoot(root);
+        return doc;
+      });
+    return {
+      modelId,
+      format: "xml",
+      decode,
+      async parse(text, options) {
+        return decode(await runAsync(modelId, () => parseText(text)), options);
+      },
+      encode,
+      async stringify(value, options) {
+        return (await encode(value, options)).toXml();
+      },
+      bind: (hooks, state) => make({ hooks, state }),
+    };
   };
+  return make({});
 }
 `;
 
@@ -756,6 +882,9 @@ export interface Writer {
   readonly doc: Document;
   /** In-scope namespace bindings per written element ("" is the default namespace). */
   readonly scopes: WeakMap<Node, ReadonlyMap<string, string>>;
+  /** Hooks and state of this one write operation. */
+  readonly hooks: object | undefined;
+  readonly state: unknown;
 }
 
 /** Namespace of one written element or attribute. */
@@ -780,10 +909,19 @@ export interface WElem {
   readonly collection: boolean;
   /** Scalar: encodes to text. Model: writes the child element under its parent. */
   readonly enc: ((value: never) => string) | null;
-  readonly child: ((w: Writer, host: Node, value: never, name: string, ns: NsOut | null) => Node) | null;
+  readonly child: ((w: Writer, host: Node, value: never, name: string, ns: NsOut | null) => Promise<Node>) | null;
   readonly cdata: boolean;
   readonly nil: Policy;
   readonly empty: Policy;
+  /** The rule's whole output is a handwritten write hook (custom.to), or fails by name when its name is null. */
+  readonly hook?: { readonly name: string | null };
+}
+
+/** An attribute or content rule written by a handwritten hook. */
+export interface WHook {
+  readonly kind: "attribute" | "content";
+  readonly rule: string;
+  readonly name: string | null;
 }
 
 export interface WSpec {
@@ -794,6 +932,7 @@ export interface WSpec {
   readonly elems: readonly WElem[];
   readonly content: { readonly to: string; readonly collection: boolean; readonly cdata: boolean } | null;
   readonly ordered: boolean;
+  readonly hooks?: readonly WHook[];
   /** A reason the writer refuses this mapping by name (unsupported_mapping). */
   readonly refusal: string | null;
 }
@@ -844,15 +983,78 @@ function anyAttributeText(spec: WSpec, to: string, key: string, v: unknown): str
   throw new XmlError("invalid_document", "any_attribute value for " + key + " must be a scalar", "").context(spec.id, to);
 }
 
+/** The document operations a handwritten write hook may use; everything goes through the moxml-ts document. */
+export interface XmlWriteBuilder {
+  readonly document: Document;
+  /** Appends a child element; ns null or absent means no namespace (an xmlns="" is declared under a default namespace). */
+  element(parent: Node, name: string, ns?: { readonly uri: string; readonly prefix?: string | null } | null): Node;
+  text(parent: Node, text: string): void;
+  attribute(element: Node, name: string, value: string, ns?: { readonly uri: string; readonly prefix?: string | null } | null): void;
+  /**
+   * Parses well-formed markup in no namespace and appends its nodes (elements, text, CDATA, comments, processing
+   * instructions) under parent through document operations. Nothing is escaped or substituted.
+   */
+  markup(parent: Node, markup: string): Promise<void>;
+}
+
+function copyMarkup(w: Writer, parent: Node, nodes: readonly Node[]): void {
+  for (const node of nodes) {
+    const kind = node.kind();
+    if (kind === KIND_ELEMENT) {
+      const uri = node.namespaceUri() ?? "";
+      const prefix = node.prefix() ?? "";
+      const made = addElement(w, parent, node.localName() ?? "", uri === "" ? null : { uri, prefix: prefix === "" ? null : prefix });
+      for (const a of node.attributes() ?? []) {
+        if (a.prefix === "xmlns" || (a.prefix === "" && a.localName === "xmlns")) continue;
+        if (a.namespaceUri === "") made.setAttribute(a.localName, a.value);
+        else made.setAttributeNS(a.namespaceUri, a.prefix === "" ? a.localName : a.prefix + ":" + a.localName, a.value);
+      }
+      copyMarkup(w, made, node.children());
+    } else if (kind === KIND_TEXT) {
+      appendText(w, parent, node.text() ?? "");
+    } else if (kind === KIND_CDATA) {
+      parent.addChild(w.doc.createCData(node.text() ?? ""));
+    } else if (kind === 3) {
+      parent.addChild(w.doc.createComment(node.text() ?? ""));
+    } else if (kind === 5) {
+      parent.addChild(w.doc.createProcessingInstruction(node.piTarget() ?? "", node.text() ?? ""));
+    }
+  }
+}
+
+function builderOf(w: Writer): XmlWriteBuilder {
+  const named = (ns: { readonly uri: string; readonly prefix?: string | null } | null | undefined): NsOut | null =>
+    ns === null || ns === undefined || ns.uri === "" ? null : { uri: ns.uri, prefix: ns.prefix ?? null };
+  return {
+    document: w.doc,
+    element: (parent, name, ns) => addElement(w, parent, name, named(ns)),
+    text: (parent, text) => appendText(w, parent, text),
+    attribute: (element, name, value, ns) => {
+      const n = named(ns);
+      if (n === null) element.setAttribute(name, value);
+      else element.setAttributeNS(n.uri, qname(name, n), value);
+    },
+    markup: async (parent, markup) => {
+      const fragment = await parseText("<lml-fragment>" + markup + "</lml-fragment>");
+      copyMarkup(w, parent, (fragment.root() as Node).children());
+    },
+  };
+}
+
+async function runWriteHook(w: Writer, spec: WSpec, value: object, host: Node, name: string | null, rule: string): Promise<void> {
+  const fn = hookFn(w.hooks, spec.id, name, "write", rule, "");
+  await (fn as (model: object, parent: Node, builder: XmlWriteBuilder, state: unknown) => unknown)(value, host, builderOf(w), w.state);
+}
+
 /** Writes one element of a model into its parent (or as a detached root). */
-export function writeModel<T extends object>(
+export async function writeModel<T extends object>(
   w: Writer,
   spec: WSpec,
   value: T,
   name: string,
   ns: NsOut | null,
   parent: Node | null,
-): Node {
+): Promise<Node> {
   if (spec.refusal !== null) throw new XmlError("unsupported_mapping", spec.refusal).context(spec.id);
   const host = addElement(w, parent, name, ns);
   const get = (to: string): unknown => (value as Record<string, unknown>)[to];
@@ -876,10 +1078,13 @@ export function writeModel<T extends object>(
       }
     }
   }
+  for (const hook of spec.hooks ?? []) {
+    if (hook.kind === "attribute") await runWriteHook(w, spec, value, host, hook.name, hook.rule);
+  }
   const order = (get(ORDERED_MEMBER) ?? null) as readonly Token[] | null;
-  const writeElem = (rule: WElem, item: unknown): void => {
+  const writeElem = async (rule: WElem, item: unknown): Promise<void> => {
     if (rule.child !== null) {
-      rule.child(w, host, item as never, rule.name, rule.ns);
+      await rule.child(w, host, item as never, rule.name, rule.ns);
       return;
     }
     if (rule.cdata) refuseCdata(spec, rule.name);
@@ -920,7 +1125,7 @@ export function writeModel<T extends object>(
       if (token.kind === "element") {
         const rule = spec.elems.find((r) => r.to === token.attribute);
         const item = rule === undefined ? undefined : items(rule)[token.index];
-        if (rule !== undefined && item !== undefined) writeElem(rule, item);
+        if (rule !== undefined && item !== undefined) await writeElem(rule, item);
       } else if (token.kind === "text") {
         const item = contentItems()[token.index];
         if (spec.content?.cdata === true) refuseCdata(spec, spec.content.to);
@@ -932,6 +1137,10 @@ export function writeModel<T extends object>(
     return host;
   }
   for (const rule of spec.elems) {
+    if (rule.hook !== undefined) {
+      await runWriteHook(w, spec, value, host, rule.hook.name, rule.name);
+      continue;
+    }
     const raw = get(rule.to);
     if (raw === null || raw === undefined || typeof raw === "symbol") {
       writeNil(rule);
@@ -942,7 +1151,10 @@ export function writeModel<T extends object>(
       if (rule.empty !== "omit") writeNil({ ...rule, nil: rule.empty });
       continue;
     }
-    for (const item of list) writeElem(rule, item);
+    for (const item of list) await writeElem(rule, item);
+  }
+  for (const hook of spec.hooks ?? []) {
+    if (hook.kind === "content") await runWriteHook(w, spec, value, host, hook.name, hook.rule);
   }
   if (spec.content !== null) {
     if (spec.content.cdata) refuseCdata(spec, spec.content.to);

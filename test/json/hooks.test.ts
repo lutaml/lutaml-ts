@@ -56,9 +56,9 @@ describe("custom serialization hooks: validator", () => {
     expect(mutated(edit)).toEqual({ reason, location });
   });
 
-  it("refuses custom on an xml rule as unsupported_mapping", () => {
+  it("accepts custom on an xml element rule and still refuses it on any_attribute (xml hooks: test/xml/hooks.test.ts)", () => {
     const tree = JSON.parse(bytes.toString("utf8"));
-    tree.models[MEASURE].mappings.xml = { root: { element: "m" }, rules: [{ kind: "element", name: ["m"], to: "amount", custom: { to: "h" } }] };
+    tree.models[MEASURE].mappings.xml = { root: { element: "m" }, rules: [{ kind: "any_attribute", to: "amount", custom: { to: "h" } }] };
     tree.capabilities = ["json", "xml"];
     let info: { reason: string; location: string } | undefined;
     try { loadBundle(Buffer.from(JSON.stringify(tree)), "json"); } catch (error) { info = (error as { info: { reason: string; location: string } }).info; }
