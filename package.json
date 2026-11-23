@@ -33,7 +33,7 @@
     "test": "vitest"
   },
   "dependencies": {
-    "moxml-ts": "git+https://github.com/lutaml/moxml-ts.git#a78091f7b11bb350fdd18a8dc6e12b3ae39661fd",
+    "moxml-ts": "git+https://github.com/lutaml/moxml-ts.git#77d01eb8d5008666f894868bb80f617ce990b5a2",
     "yaml": "2.9.1"
   },
   "devDependencies": {

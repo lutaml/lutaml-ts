@@ -88,3 +88,24 @@ describe.skipIf(!available)("any_attribute (map_all_attributes), Ruby 02g golden
     await expect(build(doc([ID, { kind: "any_attribute", to: "id" }]))).rejects.toMatchObject({ info: { reason: "unsupported_mapping" } });
   });
 });
+
+// Ruby `map_attribute "xml:lang"` matches the qualified name (mml 2.4.7 maps `lang` this way); the graph carries the
+// literal name "xml:lang". Corpus case: mml3-testsuite General/GenAttribs/xmllang1.mml (Ruby lang="en-us", TS lang absent).
+describe.skipIf(!available)("attribute rule named with the xml: prefix (mml xml:lang)", () => {
+  const LANG = { ...ID, name: ["xml:lang"], to: "lang" };
+  const langAttr = { name: "lang", type: { kind: "builtin", name: "string" }, required: false, collection: false, default: { present: false }, initialize_empty: false };
+
+  it("reads xml:lang into the mapped attribute and writes it back as xml:lang", { timeout: 120_000 }, async () => {
+    const c = await build(doc([ID, LANG], true, [langAttr]));
+    const v = (await c.parse('<n xmlns="d" id="1" xml:lang="en-us"/>')) as { id?: unknown; lang?: unknown };
+    expect(v.lang).toBe("en-us");
+    expect(v.id).toBe("1");
+    expect(await c.stringify(new c.N({ id: "1", lang: "en-gb" }))).toContain('xml:lang="en-gb"');
+  });
+
+  it("does not match an unprefixed or differently prefixed lang attribute", async () => {
+    const c = await build(doc([ID, LANG], true, [langAttr]));
+    const v = (await c.parse('<n xmlns="d" xmlns:x="u" lang="a" x:lang="b"/>')) as { lang?: unknown };
+    expect(typeof v.lang).toBe("symbol"); // unset, as for any absent attribute
+  });
+});

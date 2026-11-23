@@ -266,6 +266,8 @@ export interface ElemRule {
   readonly names: readonly string[];
   readonly ns: Accept;
   readonly collection: boolean;
+  /** The rule reads a scalar (string-like) child, not a model. */
+  readonly leaf: boolean;
   readonly dec: (el: El) => unknown;
 }
 
@@ -318,6 +320,8 @@ function elementChildren(el: El): El[] {
 
 function findAttribute(el: El, rule: AttrRule): string | null {
   for (const a of attributesOf(el)) {
+    // Ruby matches the literal qualified name: a rule named "xml:lang" is the prefixed attribute, whatever its URI.
+    if (a.prefix !== "" && rule.names.includes(a.prefix + ":" + a.localName)) return a.value;
     if (rule.names.includes(a.localName) && accepts(rule.ns, a.namespaceUri)) return a.value;
   }
   return null;
@@ -416,10 +420,10 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       xmlFail("comments and processing instructions have no ordered-content token", el.loc, "invalid_ordered_content");
     }
   }
-  if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && all.length === 0) {
-    // An element with no child node at all (<mo/>, <mo></mo>) reads as one empty text, as Ruby's from_xml with a register does.
-    // Ruby's rule for an element whose only children are elements is not uniform (checked: one unmapped or empty
-    // mapped child adds the empty text, two children or one string-valued child do not), so that case is left alone.
+  if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && lacksText(all, children, spec)) {
+    // Ruby's XmlElement#text joins the text children into one string when the element has at most one child node, so an
+    // element with no child (<mo/>, <mo></mo>) or one lone child element (unmapped, or mapped to a model) reads as one
+    // empty text; two or more children give the array of real text nodes. A lone scalar-valued child adds none (measured).
     texts.push("");
     if (spec.tokens) tokens.push({ kind: "text", attribute: spec.content.to, index: 0 });
   }
@@ -429,11 +433,22 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       const list = spec.mixed || spec.ordered ? texts : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
       if (list.length > 0) setOwn(init, content.to, list);
     } else {
+      if (all.length > 1 && textNodes > 0) {
+        throw new XmlError("invalid_document", "single-valued text content spread over " + all.length + " child nodes; Ruby reads it as a list", el.loc).context(spec.id, content.to);
+      }
       setOwn(init, content.to, textOf(el, true));
     }
   }
   if (spec.tokens) setOwn(init, ORDERED_MEMBER, tokens);
   return build(cls, init, spec, el.loc);
+}
+
+function lacksText(all: readonly Kid[], children: readonly El[], spec: ModelSpec): boolean {
+  if (all.length === 0) return true;
+  const only = children[0];
+  if (all.length !== 1 || only === undefined || all[0]?.kind !== KIND_ELEMENT) return false;
+  const rule = spec.elems.find((r) => matchesElem(r, only));
+  return rule === undefined || !rule.leaf;
 }
 
 /** Constructs the model; constructor violations become XmlErrors. */
@@ -739,6 +754,7 @@ export function xmlCodec<T>(
 const WRITER = String.raw`
 // ---------------------------------------------------------------- writing
 
+
 export interface Writer {
   readonly doc: Document;
   /** In-scope namespace bindings per written element ("" is the default namespace). */
@@ -899,6 +915,8 @@ export function writeModel<T extends object>(
     for (const token of order) {
       if ("literal" in token) {
         if (token.kind === "cdata") throw new XmlError("unsupported_mapping", "CDATA output needs a CDATA node constructor that moxml-ts does not provide").context(spec.id);
+        // Ruby skips a whitespace-only literal text token unless the model maps content (String#strip: ASCII only).
+        if (spec.content === null && token.kind === "text" && /^[ \t\n\v\f\r\0]*$/.test(token.literal)) continue;
         appendText(w, host, token.literal);
         continue;
       }

@@ -357,7 +357,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     }
     if (rule.cdata === true) writerRefusals.push(`rule ${first} is cdata`);
     readElems.push(
-      `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, dec: ${dec} },`,
+      `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}, dec: ${dec} },`,
     );
     writeElems.push(
       `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,

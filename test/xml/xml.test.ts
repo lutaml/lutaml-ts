@@ -486,7 +486,7 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
   const many = { min: 0, max: null };
   const bundle = (prefix: string | undefined): Bundle => ({
     lml_bundle: 1,
-    roots: ["Doc@default", "Tok@default"],
+    roots: ["Doc@default", "Tok@default", "Blk@default"],
     models: {
       "Doc@default": {
         lml: 2, model: "Doc", register: "default",
@@ -507,6 +507,17 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
             { kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } },
             { kind: "content", to: "value" },
           ],
+          namespace: { mode: "inherit" },
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+      // Mirrors a mixed ordered mml container with no content rule (set, list, semantics): element rule only.
+      "Blk@default": {
+        lml: 2, model: "Blk", register: "default",
+        attributes: [attr("e", { collection: many })],
+        mappings: { xml: {
+          root: { element: "b", mixed: true }, ordered: true, mixed_content: true,
+          rules: [{ kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } }],
           namespace: { mode: "inherit" },
         } },
         ordered_content: { member: "__lml_content", version: 1 },
@@ -554,6 +565,112 @@ describe.skipIf(!available)("namespace-less root and empty ordered text (mml pil
     expect([back.value, back.__lml_content]).toEqual([[""], [text(0)]]);
     const plain = await read("<t>x<e>a</e>y</t>");
     expect([plain.value, plain.__lml_content]).toEqual([["x", "y"], [text(0), element, text(1)]]);
+  });
+});
+
+describe.skipIf(!available)("single-child text and whitespace-only literal tokens (mml pilot F2, Ruby mml 2.4.7 measurements)", () => {
+  const attr = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  const many = { min: 0, max: null };
+  const rule = (name: string) => ({ kind: "element", name: [name], to: name, namespace: { mode: "inherit" } });
+  const model = (id: string, root: object, extra: object, attributes: unknown[], rules: unknown[]) => ({
+    lml: 2, model: id, register: "default", attributes,
+    mappings: { xml: { root, ...extra, rules, namespace: { mode: "inherit" } } },
+    ordered_content: { member: "__lml_content", version: 1 },
+  });
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["Tok@default", "Blk@default", "Att@default", "Txt@default"],
+    models: {
+      "Txt@default": {
+        lml: 2, model: "Txt", register: "default", attributes: [attr("value")],
+        mappings: { xml: { root: { element: "x" }, namespace: { mode: "inherit" }, rules: [{ kind: "content", to: "value" }] } },
+      },
+      "Att@default": {
+        lml: 2, model: "Att", register: "default", attributes: [attr("x"), attr("y"), attr("t")],
+        mappings: { xml: { root: { element: "a" }, namespace: { mode: "inherit" }, rules: [
+          { kind: "attribute", name: ["x"], to: "x", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "attribute", name: ["y"], to: "y", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "element", name: ["t"], to: "t", namespace: { mode: "inherit" } },
+        ] } },
+      },
+      "Tok@default": model("Tok", { element: "t", mixed: true }, { ordered: true, mixed_content: true },
+        [attr("value", { collection: many }), attr("e", { collection: many })], [rule("e"), { kind: "content", to: "value" }]),
+      "Blk@default": model("Blk", { element: "b", mixed: true }, { ordered: true, mixed_content: true }, [attr("e", { collection: many })], [rule("e")]),
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  const text = (index: number) => ({ kind: "text", attribute: "value", index });
+  let codecs: Record<string, { parse(t: string): Promise<unknown>; stringify(v: unknown): Promise<string> }>;
+  const codec = async (id: string) => (codecs ??= (await load(generateInto(bundle)))["xml"].CODECS as never)[id] as NonNullable<typeof codecs>[string];
+
+  // Ruby: XmlElement#text joins the text children into one string when the element has at most one child node, so a
+  // lone child element (mapped to a model or unmapped, with or without text of its own) leaves one empty text value;
+  // two or more children give the array of the real text nodes. Cases: mml3 mmlcore crashtests/mozilla/412237-1.mml
+  // (<ms><mfrac/></ms>) and children-with-negative-block-sizes.math0.mml (<mi><span/></mi>), measured with ruby_oracle.rb.
+  it("reads one empty text for a lone unmapped child element and none for two", { timeout: 180_000 }, async () => {
+    const c = await codec("Tok@default");
+    const read = async (xml: string) => dump(await c.parse(xml)) as { value: unknown; __lml_content: unknown };
+    for (const xml of ["<t><span/></t>", "<t><span>x</span></t>", "<t><span><b/></span></t>"]) {
+      const v = await read(xml);
+      expect([v.value, v.__lml_content], xml).toEqual([[""], [text(0)]]);
+    }
+    const two = await read("<t><span/><span/></t>");
+    expect([two.value, two.__lml_content]).toEqual([null, []]);
+    const spaced = await read("<t><span/> </t>");
+    expect([spaced.value, spaced.__lml_content]).toEqual([[" "], [text(0)]]); // preserved: a real text node
+  });
+
+  // Ruby's XmlElement#text returns the list of text nodes (not a string) once an element has more than one child node,
+  // even for a single-valued string attribute: mml 2.4.7 annotation `a<span/>b` holds ["a","b"] and `\n <span/>\n ` holds
+  // two whitespace strings. A TS string cannot hold that list and joining it would change the data, so it refuses by
+  // name. Case: mmlcore presentation-markup/mrow/legacy-mrow-like-elements-002.math0.mml (no comment in the input).
+  it("refuses single-valued text content spread over several child nodes, and keeps one node or only an element", { timeout: 180_000 }, async () => {
+    const txt = await codec("Txt@default");
+    const read = async (xml: string) => (dump(await txt.parse(xml)) as { value: unknown }).value;
+    expect(await read("<x>ab</x>")).toBe("ab");
+    expect(await read("<x><span/></x>")).toBe(""); // Ruby: "" for a lone element child
+    for (const xml of ["<x>a<span/>b</x>", "<x>a<span/></x>", "<x>\n <span/>\n </x>"]) {
+      expect(await infoOf(() => txt.parse(xml)), xml).toMatchObject({ reason: "invalid_document", model_id: "Txt@default", attribute: "value" });
+    }
+  });
+
+  // Valid XML keeps a whitespace character written as a character reference in an attribute value (&#10; stays LF);
+  // only literal whitespace is normalized. The moxml-ts pin a78091f (leptris-wasm 1.6.5) dropped TAB and LF when
+  // serializing, so the writer refused them; the pin at 77d01eb (leptris-wasm 1.9.0) writes &#9; &#10; &#13; as Ruby does.
+  // Cases: mmlcore relations/css-styling/{border,margin,padding}-001.*.mml (style="...;&#10; ...") and lengths-2.math1.mml.
+  it("round-trips TAB, LF and CR in attribute values with quotes, ampersands and Unicode", { timeout: 180_000 }, async () => {
+    const att = await codec("Att@default");
+    const bare = (x: string) => x.replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    const read = async (xml: string) => dump(await att.parse(xml)) as { x: string; y: string };
+    const value = await read('<a x="p&#10;q&#9;r&#13;s" y="lit\neral\ttab"/>');
+    expect(value.x).toBe("p\nq\tr\rs"); // character references are kept by the parser
+    expect(value.y).toBe("lit eral tab"); // literal whitespace is normalized to spaces
+    const input = '<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>';
+    const out = bare(await att.stringify(await att.parse(input)));
+    expect(out).toBe('<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>'); // text keeps its raw LF
+    expect(await read(out)).toMatchObject({ x: "p\nq\tr\rs", y: '"a" & <b> é😀\n' });
+    // preserved: ordinary attributes are written unchanged
+    expect(bare(await att.stringify(await att.parse('<a x="plain" y="a b"/>')))).toBe('<a x="plain" y="a b"/>');
+  });
+
+  // Ruby (ordered_applier / instance_methods): a whitespace-only literal text token is skipped unless the model maps
+  // content; a mapped text value and non-ASCII whitespace (U+00A0, String#strip keeps it) are kept.
+  it("drops whitespace-only literal tokens of a mixed model without a content rule, and keeps them elsewhere", { timeout: 180_000 }, async () => {
+    const blk = await codec("Blk@default");
+    const out = async (xml: string) => (await blk.stringify(await blk.parse(xml))).replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    expect(await out("<b> <e>x</e> </b>")).toBe("<b><e>x</e></b>");
+    expect(await out("<b>  </b>")).toBe("<b/>");
+    expect(await out("<b>\n\t</b>")).toBe("<b/>");
+    expect(await out("<b>&#xA0;</b>")).toBe("<b>\u00a0</b>");
+    expect(await out("<b> y <e>x</e></b>")).toBe("<b> y <e>x</e></b>");
+    const tok = await codec("Tok@default");
+    expect((await tok.stringify(await tok.parse("<t> </t>"))).replace(/ xmlns(:\w+)?="[^"]*"/g, "")).toBe("<t> </t>");
+    // the data still records the literal token (Ruby's capture does)
+    expect((dump(await blk.parse("<b> </b>")) as { __lml_content: unknown }).__lml_content).toEqual([{ kind: "text", literal: " " }]);
   });
 });
 
