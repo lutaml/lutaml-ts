@@ -18,7 +18,7 @@ require "digest"
 require "optparse"
 
 PINS = {
-  lutaml: "4fad925d9438ff92089d2086e5d3efebd452713b",
+  lutaml: "8531b54dd14b03eed894f6a7f665f3029c7e5324",
   unitsml: "ee09d6d7f87bb2f76069d1cb6ced6c64cbb2ebb1",
   oracle: "9db47641d84587df4241d9f5639a92f566f33cfa",
 }.freeze
@@ -101,18 +101,16 @@ cases << { "id" => "constructed-conversions-container",
            "model_id" => "Unitsml::Model::Units::Conversions@default",
            "source" => "constructed; synthetic sample values" }.merge(dump.call(conversions))
 
-# 3. Description children: Ruby's Nokogiri adapter writes them with xmlns="" (no
-#    namespace) while the exported IR says "inherit" (the unitsml namespace).
-#    Recorded as known gaps; the fixture keeps Ruby's output as the oracle.
-gap = "Ruby writes ConversionDescription/WSDLDescription with xmlns=\"\" (unqualified); the exported IR rule says namespace inherit"
+# 3. Description children: Ruby's Nokogiri adapter writes them unqualified
+#    (xmlns=""); the exported IR states that as namespace mode "unqualified".
 special = units::SpecialConversionFrom.new(id: "NISTc_special_d", initial_unit: "#NISTu7",
                                            conversion_url: "https://example.org/special", conversion_description: ["alpha", "beta"])
-cases << { "id" => "constructed-special-description", "known_gap" => gap,
+cases << { "id" => "constructed-special-description",
            "model_id" => "Unitsml::Model::Units::SpecialConversionFrom@default",
            "source" => "constructed; synthetic sample values" }.merge(dump.call(special))
 wsdl = units::WsdlConversionFrom.new(id: "NISTc_wsdl_d", initial_unit: "#NISTu8", wsdl_url: "https://example.org/w.wsdl",
                                      wsdl_description: ["gamma"])
-cases << { "id" => "constructed-wsdl-description", "known_gap" => gap,
+cases << { "id" => "constructed-wsdl-description",
            "model_id" => "Unitsml::Model::Units::WsdlConversionFrom@default",
            "source" => "constructed; synthetic sample values" }.merge(dump.call(wsdl))
 

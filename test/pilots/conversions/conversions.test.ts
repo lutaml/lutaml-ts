@@ -12,7 +12,7 @@ import type { Tree } from "../../../scripts/mml/lib.mjs";
 import { canonicalTree, dump, firstDiff, stripWs } from "../../../scripts/mml/lib.mjs";
 
 // Conversions-only PARTIAL A6 evidence: the real UnitsML Conversions graph
-// (unitsml-ruby ee09d6d7, exported by lutaml-model 4fad925d with XmlIdType
+// (unitsml-ruby ee09d6d7, exported by lutaml-model 8531b54d with XmlIdType
 // registered explicitly) is generated into typed TS XML codecs and replayed
 // against Ruby (Nokogiri adapter) oracles. Unit and Uncertainty are NOT covered.
 // The fixture is committed; generate.rb needs explicit source roots and is not run here.
@@ -30,7 +30,6 @@ interface Case {
   id: string;
   model_id: string;
   source: string;
-  known_gap?: string;
   input_xml?: string;
   ruby_xml: string;
   portable_json: unknown;
@@ -115,7 +114,7 @@ describe("fixture provenance", () => {
   it("pins every source head, the Nokogiri oracle adapter and the explicit registration", () => {
     const p = fixture.provenance as { heads: Record<string, string>; xml_adapter: string; value_type_registration: Record<string, unknown>; bundle_checksum: string };
     expect(p.heads).toEqual({
-      lutaml: "4fad925d9438ff92089d2086e5d3efebd452713b",
+      lutaml: "8531b54dd14b03eed894f6a7f665f3029c7e5324",
       unitsml: "ee09d6d7f87bb2f76069d1cb6ced6c64cbb2ebb1",
       oracle: "9db47641d84587df4241d9f5639a92f566f33cfa",
     });
@@ -158,98 +157,60 @@ describe("generation with the xml:id binding", () => {
   });
 });
 
-/**
- * The exported IR states the Float64/Special/Wsdl `id` rules as namespace "inherit", but Ruby writes and reads
- * `xml:id` (XML namespace, set by XmlIdType, which a TS String binding cannot carry). This copy states the XML
- * namespace on those rules, using only the existing contract (namespace.mode "uri" + prefix).
- */
-function withXmlNamespaceOnIdRules(bundle: Bundle): Bundle {
-  const copy = structuredClone(bundle) as unknown as { models: Record<string, { attributes: { name: string; type: { kind: string } }[]; mappings: { xml?: { rules: Record<string, unknown>[] } } }> };
-  for (const doc of Object.values(copy.models)) {
-    for (const rule of doc.mappings.xml?.rules ?? []) {
-      const attr = doc.attributes.find((a) => a.name === rule["to"]);
-      if (rule["kind"] === "attribute" && attr?.type.kind === "value") {
-        rule["namespace"] = { mode: "uri", uri: XML_NS, prefix: "xml" };
-      }
-    }
-  }
-  return copy as unknown as Bundle;
-}
-
 describe.skipIf(!available)("generated Conversions XML codecs (moxml-ts) vs the Ruby oracle", () => {
-  let actual: Loaded;
-  let stated: Loaded;
-  it("generate (exported IR, and IR with the xml namespace stated), compile under strict tsc and load", { timeout: 180_000 }, async () => {
-    actual = (await import(pathToFileURL(join(generateInto(fixture.bundle, XML_ID), "index.ts")).href)) as Loaded;
-    stated = (await import(pathToFileURL(join(generateInto(withXmlNamespaceOnIdRules(fixture.bundle), XML_ID), "index.ts")).href)) as Loaded;
-    for (const mod of [actual, stated]) {
-      expect(Object.keys(mod["xml"].CODECS).sort()).toEqual(Object.keys(fixture.bundle.models).sort());
-    }
+  let mod: Loaded;
+  it("generate from the exported IR as-is, compile under strict tsc and load", { timeout: 180_000 }, async () => {
+    mod = (await import(pathToFileURL(join(generateInto(fixture.bundle, XML_ID), "index.ts")).href)) as Loaded;
+    expect(Object.keys(mod["xml"].CODECS).sort()).toEqual(Object.keys(fixture.bundle.models).sort());
   });
 
-  describe("with the xml namespace stated on id rules: full parity", () => {
-    for (const c of fixture.cases) {
-      describe(c.id, () => {
-        const xml = c.input_xml ?? c.ruby_xml;
+  it("the exported rules state the namespaces Ruby serializes", () => {
+    const rules = (id: string) => (fixture.bundle.models[`Unitsml::Model::Units::${id}@default`] as unknown as { mappings: { xml: { rules: { name: string[]; namespace: unknown }[] } } })
+      .mappings.xml.rules;
+    for (const model of ["Float64ConversionFrom", "SpecialConversionFrom", "WsdlConversionFrom"]) {
+      expect(rules(model).find((r) => r.name[0] === "id")?.namespace).toEqual({ mode: "uri", prefix: "xml", uri: XML_NS });
+    }
+    expect(rules("SpecialConversionFrom").find((r) => r.name[0] === "ConversionDescription")?.namespace).toEqual({ mode: "unqualified" });
+    expect(rules("WsdlConversionFrom").find((r) => r.name[0] === "WSDLDescription")?.namespace).toEqual({ mode: "unqualified" });
+    expect(rules("Float64ConversionFrom").find((r) => r.name[0] === "initialUnit")?.namespace).toEqual({ mode: "inherit" });
+    expect(fixture.cases[0]?.ruby_xml).toContain(' xml:id="');
+    expect(fixture.cases[0]?.ruby_xml).toContain(`xmlns="${UNITSML_NS}"`);
+  });
 
-        it("reads the Ruby XML into the Ruby portable-JSON data (exact lexical strings, flags, children)", async () => {
-          const value = await stated["xml"].CODECS[c.model_id].parse(xml);
-          expect(firstDiff(rubyNeutral(c.portable_json), neutral(dump(value)))).toBeNull();
-        });
+  for (const c of fixture.cases) {
+    describe(c.id, () => {
+      const xml = c.input_xml ?? c.ruby_xml;
 
-        // A case with a recorded known gap must fail the tree profile for exactly that reason (`it.fails`
-        // turns red once the gap is closed, so the gap cannot be forgotten); other cases must match.
-        const treeTest = c.known_gap === undefined ? it : it.fails;
-        treeTest(`serializes to the Ruby XML tree under the namespace-aware profile (xml:id in the XML namespace)${c.known_gap === undefined ? "" : ` — KNOWN GAP: ${c.known_gap}`}`, async () => {
-          const codec = stated["xml"].CODECS[c.model_id];
-          const out = await codec.stringify(await codec.parse(xml));
-          expect(firstDiff(stripWs(await canonicalTree(c.ruby_xml)), stripWs(await canonicalTree(out)))).toBeNull();
-          expect(attributeNames(await canonicalTree(out)).filter((n) => n.endsWith("|id"))).not.toEqual([]);
-        });
+      it("reads the Ruby XML into the Ruby portable-JSON data (exact lexical strings, flags, children)", async () => {
+        const value = await mod["xml"].CODECS[c.model_id].parse(xml);
+        expect(firstDiff(rubyNeutral(c.portable_json), neutral(dump(value)))).toBeNull();
       });
-    }
 
-    it("keeps the long exact lexical strings and flags", async () => {
-      const c = fixture.cases.find((x) => x.id === "constructed-float64-long-lexical") as Case;
-      const value = await stated["xml"].CODECS[c.model_id].parse(c.ruby_xml);
-      expect(value.final_addend).toBe("273.150000000000000000000000000000000000000000000000000000000001");
-      expect(value.initial_addend).toBe("-273.150000000000000000000000000000000000000000000000000000000001");
-      expect(value.exact).toBe(false);
-      expect(value.id).toBe("NISTc_long");
+      it("serializes to the Ruby XML tree under the namespace-aware profile (xml:id in the XML namespace)", async () => {
+        const codec = mod["xml"].CODECS[c.model_id];
+        const out = await codec.stringify(await codec.parse(xml));
+        expect(firstDiff(stripWs(await canonicalTree(c.ruby_xml)), stripWs(await canonicalTree(out)))).toBeNull();
+        expect(attributeNames(await canonicalTree(out)).filter((n) => n.endsWith("|id"))).not.toEqual([]);
+      });
     });
+  }
 
-    it("byte parity with Ruby's text is reported separately (not part of the tree profile)", async () => {
-      const rows: Record<string, boolean> = {};
-      for (const c of fixture.cases) {
-        const codec = stated["xml"].CODECS[c.model_id];
-        rows[c.id] = (await codec.stringify(await codec.parse(c.input_xml ?? c.ruby_xml))) === c.ruby_xml;
-      }
-      writeFileSync(join(tmpdir(), "lml-conversions-byte-parity.json"), JSON.stringify(rows, null, 2));
-      expect(Object.keys(rows).length).toBe(fixture.cases.length);
-    });
+  it("keeps the long exact lexical strings and flags", async () => {
+    const c = fixture.cases.find((x) => x.id === "constructed-float64-long-lexical") as Case;
+    const value = await mod["xml"].CODECS[c.model_id].parse(c.ruby_xml);
+    expect(value.final_addend).toBe("273.150000000000000000000000000000000000000000000000000000000001");
+    expect(value.initial_addend).toBe("-273.150000000000000000000000000000000000000000000000000000000001");
+    expect(value.exact).toBe(false);
+    expect(value.id).toBe("NISTc_long");
   });
 
-  describe("exported IR as-is (KNOWN GAP: the xml namespace of xml:id is not in the IR)", () => {
-    const c = (): Case => fixture.cases[0] as Case;
-
-    it("the exported id rule says namespace inherit while Ruby's attribute is in the XML namespace", () => {
-      const rule = (fixture.bundle.models["Unitsml::Model::Units::Float64ConversionFrom@default"] as unknown as { mappings: { xml: { rules: { name?: string[]; namespace?: unknown }[] } } })
-        .mappings.xml.rules.find((r) => r.name?.[0] === "id");
-      expect(rule?.namespace).toEqual({ mode: "inherit" });
-      expect(c().ruby_xml).toContain(' xml:id="');
-      expect(c().ruby_xml).toContain(`xmlns="${UNITSML_NS}"`);
-    });
-
-    it("drops the xml:id value on read (counterexample)", async () => {
-      const value = await actual["xml"].CODECS[c().model_id].parse(c().ruby_xml);
-      expect(typeof value.id).not.toBe("string");
-    });
-
-    // Goes red when the exporter states the namespace; then drop `.fails` and the patch helper.
-    it.fails("round-trips xml:id with the Ruby tree", async () => {
-      const codec = actual["xml"].CODECS[c().model_id];
-      const out = await codec.stringify(await codec.parse(c().ruby_xml));
-      expect(firstDiff(stripWs(await canonicalTree(c().ruby_xml)), stripWs(await canonicalTree(out)))).toBeNull();
-    });
+  it("byte parity with Ruby's text is reported separately (not part of the tree profile)", async () => {
+    const rows: Record<string, boolean> = {};
+    for (const c of fixture.cases) {
+      const codec = mod["xml"].CODECS[c.model_id];
+      rows[c.id] = (await codec.stringify(await codec.parse(c.input_xml ?? c.ruby_xml))) === c.ruby_xml;
+    }
+    writeFileSync(join(tmpdir(), "lml-conversions-byte-parity.json"), JSON.stringify(rows, null, 2));
+    expect(Object.keys(rows).length).toBe(fixture.cases.length);
   });
 });
