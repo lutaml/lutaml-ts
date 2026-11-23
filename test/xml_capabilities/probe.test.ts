@@ -27,7 +27,7 @@ describe("moxml-ts capability probe", () => {
       for (const f of ["pin", "parser", "namespace", "attribute", "mixed-content", "builder", "serialization", "parser-policy"]) {
         expect(faces.has(f), f).toBe(true);
       }
-      expect(cases.length).toBe(31);
+      expect(cases.length).toBe(32);
     });
 
     it("no drift between the recorded and observed behaviour", () => {
