@@ -48,7 +48,7 @@ export const RESERVED_ATTRIBUTE_NAMES: readonly string[] = [
 const MAPPING_OBJECT_KEYS = ["root_mappings", "child_mappings"];
 const XML_PREFIX = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
-const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content"];
+const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content", "custom_initialize"];
 const ATTRIBUTE_KEYS = ["name", "type", "required", "collection", "default", "initialize_empty", "values", "discriminator"];
 const RULE_KEYS = ["kind", "name", "key", "to", "namespace", "prefix", "cdata", "render", "discriminator", "members", "min", "max", "child_mappings", "root_mappings", "polymorphic_map"];
 const FORMAT_KEYS = ["root", "namespace", "rules", "root_mappings", "child_mappings", "ordered", "mixed_content", "sequence"];
@@ -190,12 +190,12 @@ function modelV2(node: Obj, at: string, expectedId?: string): string {
   attributesV2(node["attributes"], at, id);
   if (has(node, "mappings")) mappingsV2(node["mappings"], at, id, node["attributes"]);
   orderedContent(node, at, id);
+  customInitialize(node, at, id);
   return id;
 }
 
 function rejectExecutableFlags(node: Obj, at: string): void {
   const flags: readonly (readonly [string, ErrorCode])[] = [
-    ["custom_initialize", "custom_initialize"],
     ["imperative_element_order", "imperative_element_order"],
   ];
   for (const [key, reason] of flags) {
@@ -518,6 +518,15 @@ function orderedContent(node: Obj, at: string, id: string): void {
   if (!valid) {
     fail("invalid_ordered_content", `expected {member: ${ORDERED_CONTENT_MEMBER}, version: 1}`,
       at + pointer("ordered_content"), { model_id: id });
+  }
+}
+
+/** Optional marker: only `true` is valid; the body stays handwritten per target. */
+function customInitialize(node: Obj, at: string, id: string): void {
+  if (!has(node, "custom_initialize")) return;
+  if (node["custom_initialize"] !== true) {
+    fail("invalid_document", "custom_initialize must be true when present",
+      at + pointer("custom_initialize"), { model_id: id });
   }
 }
 

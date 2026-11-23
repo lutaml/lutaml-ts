@@ -127,6 +127,12 @@ export interface ModelDocument {
   readonly attributes: readonly AttributeSpec[];
   readonly mappings: Mappings;
   readonly ordered_content?: OrderedContentSpec;
+  /**
+   * Present (always `true`) when the source model has a handwritten
+   * initializer. No body travels in the document: targets emit a stub and the
+   * consumer supplies the implementation. Absent means a plain data constructor.
+   */
+  readonly custom_initialize?: true;
 }
 
 export interface ValueTypeSpec {
