@@ -336,12 +336,6 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
         if (c.expected_data === undefined || OVERRIDES[c.id] !== undefined) continue;
         const codec = mod["xml"].CODECS[c.model_id];
         const value = await codec.parse(c.input);
-        if (c.id === "para-cdata-token") {
-          const info = await infoOf(() => codec.stringify(value));
-          expect(info?.reason, c.id).toBe("unsupported_mapping");
-          expect(info?.detail).toMatch(/CDATA/);
-          continue;
-        }
         const text: string = await codec.stringify(value);
         // as_nil / as_blank write an empty element for a nil member, which reads back as "";
         // an empty-string member under the default empty policy is omitted and reads back as nil (as in Ruby's own to_xml).
@@ -389,10 +383,10 @@ describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
       expect(text).toBe("<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>");
     });
 
-    it("refuses CDATA output by name instead of dropping it", async () => {
+    it("writes a parsed CDATA token back as a CDATA section (never dropped, never escaped text)", async () => {
       const codec = mod["xml"].CODECS["XmlOracle::Para@default"];
-      const info = await infoOf(async () => codec.stringify(await codec.parse("<p>a<![CDATA[raw]]></p>")));
-      expect(info).toMatchObject({ reason: "unsupported_mapping", format: "xml", model_id: "XmlOracle::Para@default" });
+      const out = await codec.stringify(await codec.parse("<p>a<![CDATA[raw<&>]]></p>"));
+      expect(out).toBe("<p>a<![CDATA[raw<&>]]></p>");
     });
   });
 });

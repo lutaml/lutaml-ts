@@ -24,14 +24,14 @@ Changed since the 07a pin (b0183ed): `Node` now has namespace accessors and in-s
 | Namespace URI / prefix | supported | `namespaceUri()`, `prefix()`, `localName()`, `qualifiedName()`, `inScopeNamespaces()`, `declaredNamespaces()` on `Node` (NS-02, NS-03, NS-05). The `namespace::` axis still yields nameless nodes (NS-04, partial). |
 | Attribute reads | partial | `attributes()` lists name, prefix, local name, URI and value in document order; `getAttribute(name)`; XPath attribute nodes still have empty name/text; no `removeAttribute` (ATTR-03). |
 | Ordered mixed content | supported | `children()` gives text/element/CDATA/comment/PI in order, whitespace kept, adjacent CDATA separate (MIX-01). `text()` is empty for CDATA/comment/PI; data via `string(/a/node()[i])` (MIX-02). |
-| CDATA | partial | Detected (kind 4) and round-trips from parse; builder cannot create CDATA, comments or PIs (BLD-04). |
-| Builder / serialization | partial | `createElement`/`createElementNS`/`setAttributeNS`/`addChild`/`setRoot` with escaping round-trip; `createElementNS` repeats a declaration already in scope, so the 07b writer tracks bindings and uses `createElement` for a bound prefix (BLD-05). TAB, LF and CR in attribute values are written as character references and survive a re-read (SER-04; the earlier pin dropped TAB/LF). CDATA/comment/PI creation now exists (this repo's writer still refuses CDATA output); no `removeAttribute`, no `toXml` options (BLD-04, SER-03). |
+| CDATA | supported | Detected (kind 4); `Document.createCData` creates sections, which the writer uses for `cdata: true` rules and parsed CDATA tokens (a value containing `]]>` is refused by name). |
+| Builder / serialization | partial | `createElement`/`createElementNS`/`setAttributeNS`/`addChild`/`setRoot` with escaping round-trip; `createElementNS` repeats a declaration already in scope, so the 07b writer tracks bindings and uses `createElement` for a bound prefix (BLD-05). TAB, LF and CR in attribute values are written as character references and survive a re-read (SER-04; the earlier pin dropped TAB/LF). CDATA/comment/PI creation exists and the writer uses it for `cdata: true` output; no `removeAttribute`, no `toXml` options (BLD-04, SER-03). |
 | Parser policy | partial | External entities are NOT fetched (XXE-safe: POL-02/03); malformed and 20000-deep input throw a generic status -2 error (POL-01/07). No entity-expansion limit (POL-06), DOCTYPE accepted, duplicate attributes and unbound prefixes accepted (ATTR-04, POL-08), no parse options (POL-09). |
 
 ## Consequences for 07b/07c
 
 - Reader: use `children()` for order and the `Node` namespace/attribute accessors; attribute order is available from `attributes()`.
-- Writer: element/attribute/text only through the builder; CDATA, comment and PI output and pretty-printing are absent upstream, so those writer cases are capability refusals until delivered.
+- Writer: element/attribute/text/CDATA through the builder; pretty-printing is absent upstream (byte equality with Ruby's pretty output is not claimed).
 - Guard input size and reject DOCTYPE before `parse` (no facade policy). Error context (line/column) is absent.
 
 Upstream references: `lutaml/moxml-ts#9` (Node/Document faces), `lutaml/leptris-rs#22`. moxml-ts was not edited.
@@ -46,8 +46,8 @@ probe alone does not establish the generated codec's accepted input or output.
   parser has no entity-expansion limit. It also applies document limits. The
   refusal is covered by `test/xml/xml.test.ts`; accepting a document in a direct
   facade probe does not mean the generated codec accepts it.
-- CDATA can be read, but CDATA output is a named `unsupported_mapping` refusal
-  until the dependency provides a constructor. Ordered-content comments and
+- CDATA is read and written (`createCData`); a value containing `]]>` is a named
+  `not_serializable` refusal. Ordered-content comments and
   processing instructions are named `invalid_ordered_content` refusals.
 - The pinned dependency refuses elements with more than 255 attributes before
   entering its wasm engine. The XML regression suite checks both the boundary

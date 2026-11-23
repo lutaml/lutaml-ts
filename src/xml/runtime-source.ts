@@ -996,8 +996,16 @@ function nilMark(host: Node): void {
   host.setAttributeNS(XSI, "xsi:nil", "true");
 }
 
-function refuseCdata(spec: WSpec, rule: string): never {
-  throw new XmlError("unsupported_mapping", "CDATA output needs a comment/CDATA node constructor that moxml-ts does not provide", "").context(spec.id, undefined, rule);
+/**
+ * Appends one CDATA section through the document's constructor (literal entities and Unicode are kept as written). A
+ * section cannot contain the terminator "]]>": splitting it would change what a reader sees (Ruby reads adjacent
+ * sections back as a list), so the value is refused by name rather than altered.
+ */
+function appendCdata(spec: WSpec, w: Writer, host: Node, text: string, rule: string): void {
+  if (text.includes("]]>")) {
+    throw new XmlError("not_serializable", 'a CDATA section cannot contain "]]>" without being split into several sections, which would not read back as one value', "").context(spec.id, undefined, rule);
+  }
+  host.addChild(w.doc.createCData(text));
 }
 
 /** Ruby to_s of a neutral scalar; a nested value has no portable text and is refused. */
@@ -1113,12 +1121,13 @@ export async function writeModel<T extends object>(
       await rule.child(w, host, item as never, rule.name, rule.ns);
       return;
     }
-    if (rule.cdata) refuseCdata(spec, rule.name);
     const text = (rule.enc as (v: unknown) => string)(item);
     if (text === "" && rule.empty === "omit") return;
     const el = addElement(w, host, rule.name, rule.ns);
     if (text === "") {
       if (rule.empty === "as_nil") nilMark(el);
+    } else if (rule.cdata) {
+      appendCdata(spec, w, el, text, rule.name);
     } else {
       appendText(w, el, text);
     }
@@ -1142,7 +1151,10 @@ export async function writeModel<T extends object>(
   if (spec.ordered && order !== null) {
     for (const token of order) {
       if ("literal" in token) {
-        if (token.kind === "cdata") throw new XmlError("unsupported_mapping", "CDATA output needs a CDATA node constructor that moxml-ts does not provide").context(spec.id);
+        if (token.kind === "cdata") {
+          appendCdata(spec, w, host, token.literal, "content");
+          continue;
+        }
         // Ruby skips a whitespace-only literal text token unless the model maps content (String#strip: ASCII only).
         if (spec.content === null && token.kind === "text" && /^[ \t\n\v\f\r\0]*$/.test(token.literal)) continue;
         appendText(w, host, token.literal);
@@ -1154,10 +1166,14 @@ export async function writeModel<T extends object>(
         if (rule !== undefined && item !== undefined) await writeElem(rule, item);
       } else if (token.kind === "text") {
         const item = contentItems()[token.index];
-        if (spec.content?.cdata === true) refuseCdata(spec, spec.content.to);
-        if (item !== undefined) appendText(w, host, String(item));
-      } else {
-        throw new XmlError("unsupported_mapping", "CDATA output needs a CDATA node constructor that moxml-ts does not provide").context(spec.id);
+        if (item !== undefined) {
+          if (spec.content?.cdata === true) appendCdata(spec, w, host, String(item), "content");
+          else appendText(w, host, String(item));
+        }
+      } else if (token.kind === "cdata") {
+        // a mapped CDATA token reads its text from the content member like a text token
+        const item = contentItems()[token.index];
+        if (item !== undefined) appendCdata(spec, w, host, String(item), "content");
       }
     }
     return host;
@@ -1184,8 +1200,12 @@ export async function writeModel<T extends object>(
     if (hook.kind === "content") await runWriteHook(w, spec, value, host, hook.name, hook.rule);
   }
   if (spec.content !== null && !(spec.content.skipApplied === true && wasApplied(value, spec.content.to))) {
-    if (spec.content.cdata) refuseCdata(spec, spec.content.to);
-    for (const item of contentItems()) appendText(w, host, String(item));
+    for (const item of contentItems()) {
+      // an empty value writes nothing (an empty text node is invisible; an empty CDATA section would not be)
+      if (spec.content.cdata) {
+        if (String(item) !== "") appendCdata(spec, w, host, String(item), "content");
+      } else appendText(w, host, String(item));
+    }
   }
   return host;
 }

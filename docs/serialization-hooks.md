@@ -37,3 +37,19 @@ transpiled, and the generator emits a typed interface per hooked model that the 
 ## Real consumers
 `test/pilots/unit` (UnitsML: generated 11-model graph, handwritten `Symbol` content hooks, 13 Ruby-recorded cases) and
 `test/pilots/uncertainty` (25 key-value hooks). Tree, data and bytes are reported separately; bytes are not claimed equal.
+
+## Defaults, scalar content and CDATA (generated models and XML/JSON writers)
+- **Default provenance.** A member the constructor filled from its declared default is "applied"; the constructor records
+  that in a nonserialized weak side table (`rt.markApplied` / `rt.wasApplied`), not in a field, so it cannot collide with a
+  member and does not show in `Object.keys`, dumps or equality. `render.default: false` (also when the key is absent, as in
+  Ruby) skips an applied default on JSON and XML write; `render.default: true` writes it. An explicit value equal to the
+  default (`false`, `0`, the default text) is NOT applied and is written; `null` follows the nil policy. Decode follows the
+  same rule (a missing member is applied, a present one is explicit). Nested models carry their own provenance. API effect:
+  `new Model()` and `new Model({x: undefined})` apply defaults; a copy built from field values is explicit.
+- **Scalar content.** A single-valued `content` joins its text pieces around UNMAPPED children. Around a DECLARED child (and
+  for `cdata: true`, around any other node) Ruby keeps a list that a single-valued attribute cannot hold, so TS refuses the
+  document by name (`invalid_document`, attribute `content`) instead of flattening it.
+- **CDATA output.** `cdata: true` on a content or scalar element rule writes the value as a CDATA section through the
+  document's `createCData` (literal entities and Unicode as written; empty values omitted); parsed CDATA tokens of ordered
+  or mixed models are written back. A value containing `]]>` is refused (`not_serializable`) because splitting it would
+  not read back as one value; `cdata` on a model-valued element rule is refused at generation.

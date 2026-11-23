@@ -320,7 +320,6 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       else readContent = `{ to: ${q(rule.to)}, collection: ${collection}${rule.cdata === true ? ", cdata: true" : ""} }`;
       if (writeHooked) writeHooks.push(`    { kind: "content", rule: "content", name: ${hookName} },`);
       else writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true}${skipsApplied(rule, attr?.default?.present === true)} }`;
-      if (rule.cdata === true && !writeHooked) writerRefusals.push(`content rule ${rule.to} is cdata`);
       continue;
     }
     if (!Array.isArray(rule.name) || rule.name.length === 0 || rule.name.some((n) => typeof n !== "string" || n === "")) {
@@ -415,7 +414,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       accept = acceptList(target.uri === null ? [null] : [target.uri, null]);
       out = nsOut(target.uri, target.prefix);
     }
-    if (rule.cdata === true && !writeHooked) writerRefusals.push(`rule ${first} is cdata`);
+    if (rule.cdata === true && child !== null && !writeHooked) refuse.unsupported(`cdata: true on the model-valued rule ${first} has no meaning`, rule.to, first);
     if (readHooked) readHooks.push(`    { kind: "element", names: ${q(names)}, ns: ${accept}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
     else {
       readElems.push(
