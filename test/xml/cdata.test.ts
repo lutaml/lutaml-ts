@@ -64,16 +64,19 @@ describe("CDATA output", () => {
     expect([back.a, back.plain, [...back.b]]).toEqual(["x<y&amp;", "p<&", ["1", "é<2>"]]);
   });
 
-  it("reads a text element and writes it back as CDATA when the rule says cdata (a plain rule stays escaped text)", async () => {
+  it("a cdata: true element reads CDATA only (canonical Ruby: plain text is dropped) and writes it back as CDATA", async () => {
     await setup();
     const c = codecs[ELEMS];
-    expect(await c.stringify(await c.parse("<e><a>t&lt;1</a><plain>t&lt;1</plain></e>"))).toBe("<e><a><![CDATA[t<1]]></a><plain>t&lt;1</plain></e>");
+    expect(await c.stringify(await c.parse("<e><a><![CDATA[t<1]]></a><plain>t&lt;1</plain></e>"))).toBe("<e><a><![CDATA[t<1]]></a><plain>t&lt;1</plain></e>");
+    expect(await c.stringify(await c.parse("<e><a>t&lt;1</a><plain>t&lt;1</plain></e>"))).toBe("<e><plain>t&lt;1</plain></e>");
   });
 
-  it("refuses a value containing the CDATA terminator by name instead of splitting or altering it", async () => {
+  it("splits the CDATA terminator across sections exactly as Ruby does, and reads the sections back as one value", async () => {
     await setup();
-    expect(await infoOf(() => codecs[SCALAR].stringify(new models["Scalar"]({ content: "a]]>b" })))).toMatchObject({ reason: "not_serializable", model_id: SCALAR, rule: "content" });
-    expect(await infoOf(() => codecs[ELEMS].stringify(new models["Elems"]({ b: ["ok", "x]]>y"] })))).toMatchObject({ reason: "not_serializable", model_id: ELEMS, rule: "b" });
+    const out = await codecs[SCALAR].stringify(new models["Scalar"]({ content: "a]]>b" }));
+    expect(out).toBe("<s><![CDATA[a]]]]><![CDATA[>b]]></s>");
+    expect((await codecs[SCALAR].parse(out)).content).toBe("a]]>b");
+    expect(await codecs[ELEMS].stringify(new models["Elems"]({ b: ["ok", "x]]>y"] }))).toBe("<e><b><![CDATA[ok]]></b><b><![CDATA[x]]]]><![CDATA[>y]]></b></e>");
     // the same text is fine in a plain rule (escaped)
     expect(await codecs[ELEMS].stringify(new models["Elems"]({ plain: "a]]>b" }))).toBe("<e><plain>a]]&gt;b</plain></e>");
   });

@@ -133,6 +133,9 @@ const OVERRIDES: Record<string, Override> = {
   // Ruby keeps the first of a repeated single-valued element; the TS reader refuses it (REVIEW-TS-1 L6).
   "person-alias-both-first-wins": { error: "invalid_document" },
   "person-scalar-duplicate-first-wins": { error: "invalid_document" },
+  // The recorded value predates canonical Ruby e4439b37 (probe: <name>text<![CDATA[..]]></name> reads nil there; the
+  // cdata oracle row OrdinaryElement/plain_then_cdata): an ordinary element rule holds nothing for several child nodes.
+  "person-entities-and-cdata": { data: { id: null, lang: null, name: null, nick: null, tags: null, addr: null, age: null, ni: null, nb: null, ee: null } },
   // Ruby falls back to the declared type for an unknown discriminator value.
   "kennel-poly-unknown-kind": { error: "unknown_discriminator" },
 };
@@ -730,7 +733,8 @@ describe.skipIf(!available)("reader limits and strictness (REVIEW-TS-1 H1, L6)",
     expect((await c.parse(tree, { limits: { maxElements: 100 } })).kids).toHaveLength(5);
     const cdata = "<n>" + "<![CDATA[a]]>".repeat(20) + "</n>";
     expect((await infoOf(() => c.parse(cdata, { limits: { maxCdata: 10 } })))).toMatchObject({ reason: "invalid_document", rule: "max_cdata_nodes" });
-    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("a".repeat(20));
+    // admitted by the raised limit; an ordinary content rule ignores CDATA (canonical Ruby), so the value is empty
+    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("");
   });
 
   it("a wide CDATA run is refused by default, not read at quadratic cost", { timeout: 180_000 }, async () => {

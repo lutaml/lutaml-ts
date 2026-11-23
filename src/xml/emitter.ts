@@ -398,7 +398,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       }
     } else {
       const scalar = scalarOf(ctx, spec, refuse);
-      dec = `x.leaf(${scalar.dec})`;
+      dec = `x.leaf(${scalar.dec}${rule.cdata === true ? ", true" : ""})`;
       enc = scalar.enc;
     }
 

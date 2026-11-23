@@ -48,10 +48,11 @@ describe("single-valued text content around child elements", () => {
     expect(await infoOf(() => c.parse("<r>a<span/>b<bold>x</bold></r>"))).toMatchObject({ reason: "invalid_document", model_id: R });
   });
 
-  it("a cdata: true single-valued rule refuses scattered sections and keeps one section", async () => {
+  it("a cdata: true single-valued rule joins adjacent sections and refuses a list state (full table: cdata-oracle.test.ts)", async () => {
     const c = (await setup())[C];
     expect((await c.parse("<c><![CDATA[a<b]]></c>")).content).toBe("a<b");
-    expect(await infoOf(() => c.parse("<c><![CDATA[a]]><![CDATA[b]]></c>"))).toMatchObject({ reason: "invalid_document", model_id: C, attribute: "content" });
+    expect((await c.parse("<c><![CDATA[a]]><![CDATA[b]]></c>")).content).toBe("ab"); // libxml2 merges adjacent sections
+    expect(await infoOf(() => c.parse("<c>t<![CDATA[a]]></c>"))).toMatchObject({ reason: "invalid_document", model_id: C, attribute: "content" });
     expect(await infoOf(() => c.parse("<c><![CDATA[a]]><x/></c>"))).toMatchObject({ reason: "invalid_document", model_id: C });
   });
 });

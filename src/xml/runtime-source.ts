@@ -477,11 +477,12 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
   if (spec.content !== null) {
     const content = spec.content;
     if (content.collection) {
-      const list = spec.mixed || spec.ordered ? texts : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
+      const list =
+        spec.mixed || spec.ordered ? texts : content.cdata === true ? cdataPieces(el, all) : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
       if (list.length > 0) setOwn(init, content.to, list);
     } else {
-      refuseScatteredScalar(spec, el, all, children, content);
-      setOwn(init, content.to, textOf(el, true));
+      const value = scalarContent(spec, el, all, children, content);
+      if (value !== null) setOwn(init, content.to, value);
     }
   }
   if (spec.tokens) setOwn(init, ORDERED_MEMBER, tokens);
@@ -557,23 +558,51 @@ function runReadHooks(
   }
 }
 
-/**
- * Ruby joins the text of a single-valued content attribute only around UNMAPPED child elements; around a declared
- * child (or, for a cdata: true rule, around any other node) its pieces stay a list, which a single-valued attribute
- * cannot hold and which Ruby's own validation flags. That state is not representable, so it is refused by name rather
- * than flattened. Unknown children are joined as before.
- */
-function refuseScatteredScalar(spec: ModelSpec, el: El, all: readonly Kid[], children: readonly El[], content: ContentRule): void {
-  if (all.length < 2) return;
-  const pieces = all.filter((k) => k.kind === KIND_TEXT || k.kind === KIND_CDATA);
-  if (content.cdata === true) {
-    if (!all.some((k) => k.kind === KIND_CDATA)) return;
-    throw new XmlError("invalid_document", "single-valued cdata content spread over " + all.length + " child nodes; Ruby keeps the sections as a list", el.loc).context(spec.id, content.to, "content");
+/** One child node of an element as Ruby's adapter sees it: adjacent CDATA sections are one node (libxml2 merges them). */
+interface LogicalNode {
+  readonly kind: number;
+  readonly text: string;
+}
+
+function logicalNodes(el: El, all: readonly Kid[]): LogicalNode[] {
+  const out: LogicalNode[] = [];
+  for (const kid of all) {
+    if (kid.kind === 5) continue; // processing instructions are not content-bearing
+    const text = kid.kind === KIND_TEXT ? (kid.node.text() ?? "") : kid.kind === KIND_CDATA ? cdataText(el, kid) : "";
+    const last = out[out.length - 1];
+    if (kid.kind === KIND_CDATA && last?.kind === KIND_CDATA) out[out.length - 1] = { kind: KIND_CDATA, text: last.text + text };
+    else out.push({ kind: kid.kind, text });
   }
-  if (pieces.length === 0) return;
-  const mapped = children.find((c) => spec.elems.some((r) => matchesElem(r, c)) || (spec.hooks ?? []).some((h) => h.kind === "element" && matchesElem(h, c)));
-  if (mapped === undefined) return;
-  throw new XmlError("invalid_document", "single-valued text content is split around the declared child " + localOf(mapped) + "; Ruby keeps the pieces as a list and flags it invalid", el.loc).context(spec.id, content.to, "content");
+  return out;
+}
+
+/**
+ * The value of a single-valued content attribute, as canonical Ruby reads it (scripts/cdata_oracle.rb, 55 recorded rows).
+ * An ordinary rule reads TEXT nodes only (CDATA is ignored) and joins them around unmapped children; a cdata: true rule
+ * reads CDATA sections only (text is ignored). When the element has more than one child node and the rule's pieces must
+ * stay a list (a declared child for an ordinary rule; any other node for cdata: true), Ruby holds an Array in the
+ * :string attribute: an empty list is no value, a non-empty list cannot be represented by a typed string and is refused
+ * by name. Returns null for "no value".
+ */
+function scalarContent(spec: ModelSpec, el: El, all: readonly Kid[], children: readonly El[], content: ContentRule): string | null {
+  const nodes = logicalNodes(el, all);
+  const wanted = content.cdata === true ? KIND_CDATA : KIND_TEXT;
+  const pieces = nodes.filter((n) => n.kind === wanted).map((n) => n.text);
+  const listState =
+    nodes.length > 1 &&
+    (content.cdata === true || children.some((c) => spec.elems.some((r) => matchesElem(r, c)) || (spec.hooks ?? []).some((h) => h.kind === "element" && matchesElem(h, c))));
+  if (!listState) return pieces.join("");
+  if (pieces.length === 0) return null;
+  throw new XmlError(
+    "invalid_document",
+    "single-valued " + (content.cdata === true ? "cdata" : "text") + " content is held by Ruby as a list of " + pieces.length + " piece(s) here (" + nodes.length + " child nodes), which a string cannot represent",
+    el.loc,
+  ).context(spec.id, content.to, "content");
+}
+
+/** The CDATA sections of an element as separate pieces (adjacent sections are one), for a cdata: true collection. */
+function cdataPieces(el: El, all: readonly Kid[]): string[] {
+  return logicalNodes(el, all).filter((n) => n.kind === KIND_CDATA).map((n) => n.text);
 }
 
 function lacksText(all: readonly Kid[], children: readonly El[], spec: ModelSpec): boolean {
@@ -689,8 +718,19 @@ export function orNil<T>(dec: (s: string, el: El) => T): (s: string, el: El) => 
 }
 
 /** Element rule value for a scalar: its direct text through a decoder. */
-export function leaf(dec: (s: string, el: El) => unknown): (el: El) => unknown {
-  return (el) => dec(textOf(el, true), el);
+export function leaf(dec: (s: string, el: El) => unknown, cdata = false): (el: El) => unknown {
+  return (el) => {
+    // Canonical Ruby (cdata oracle): an ordinary element rule reads its ONE child node (text or CDATA) and holds nothing
+    // when there are several; a cdata: true rule reads the first CDATA section only and holds nothing without one.
+    const nodes = logicalNodes(el, kids(el));
+    if (cdata) {
+      const first = nodes.find((n) => n.kind === KIND_CDATA);
+      return first === undefined || first.text === "" ? null : dec(first.text, el);
+    }
+    if (nodes.length > 1) return null;
+    const only = nodes[0];
+    return dec(only !== undefined && (only.kind === KIND_TEXT || only.kind === KIND_CDATA) ? only.text : "", el);
+  };
 }
 
 /**
@@ -997,15 +1037,18 @@ function nilMark(host: Node): void {
 }
 
 /**
- * Appends one CDATA section through the document's constructor (literal entities and Unicode are kept as written). A
- * section cannot contain the terminator "]]>": splitting it would change what a reader sees (Ruby reads adjacent
- * sections back as a list), so the value is refused by name rather than altered.
+ * Appends a CDATA section through the document's constructor (literal entities and Unicode as written). A value
+ * containing the terminator "]]>" is split as Ruby does (x]]>y -> <![CDATA[x]]]]><![CDATA[>y]]>); readers join adjacent
+ * sections back into the one value.
  */
-function appendCdata(spec: WSpec, w: Writer, host: Node, text: string, rule: string): void {
-  if (text.includes("]]>")) {
-    throw new XmlError("not_serializable", 'a CDATA section cannot contain "]]>" without being split into several sections, which would not read back as one value', "").context(spec.id, undefined, rule);
+function appendCdata(_spec: WSpec, w: Writer, host: Node, text: string, _rule: string): void {
+  const parts = text.split("]]>");
+  let current = parts[0] ?? "";
+  for (const part of parts.slice(1)) {
+    host.addChild(w.doc.createCData(current + "]]"));
+    current = ">" + part;
   }
-  host.addChild(w.doc.createCData(text));
+  host.addChild(w.doc.createCData(current));
 }
 
 /** Ruby to_s of a neutral scalar; a nested value has no portable text and is refused. */
@@ -1201,10 +1244,11 @@ export async function writeModel<T extends object>(
   }
   if (spec.content !== null && !(spec.content.skipApplied === true && wasApplied(value, spec.content.to))) {
     for (const item of contentItems()) {
-      // an empty value writes nothing (an empty text node is invisible; an empty CDATA section would not be)
+      // canonical Ruby writes a single-valued empty content as an empty element (<r/>), a list entry "" as <r></r>
+      const text = String(item);
       if (spec.content.cdata) {
-        if (String(item) !== "") appendCdata(spec, w, host, String(item), "content");
-      } else appendText(w, host, String(item));
+        if (text !== "") appendCdata(spec, w, host, text, "content");
+      } else if (text !== "" || spec.content.collection) appendText(w, host, text);
     }
   }
   return host;
