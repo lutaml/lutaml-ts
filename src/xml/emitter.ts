@@ -105,7 +105,7 @@ class Context {
   }
 
   bind(binding: TypeBinding): string {
-    const id = binding.module + "\u0000" + binding.export;
+    const id = binding.module + "\u0000" + binding.export + (binding.xmlLexical ? "\u0000xml" : "");
     const known = this.bound.get(id);
     if (known !== undefined) return known.alias;
     const alias = `_b${this.bound.size}`;
@@ -115,7 +115,7 @@ class Context {
 
   importLines(): string[] {
     return [...this.bound.values()].map(({ alias, binding }) => {
-      const e = binding.export;
+      const e = binding.export + (binding.xmlLexical ? "Xml" : "");
       return `import { format${e} as ${alias}_format, parse${e} as ${alias}_parse } from ${q(fromSubdirectory(binding.module))};`;
     });
   }
@@ -158,7 +158,9 @@ function scalarFor(ctx: Context, name: string, refuse: Refusal, attribute: strin
 function boundScalar(ctx: Context, binding: TypeBinding): Scalar {
   const alias = ctx.bind(binding);
   return {
-    dec: `x.orNil((s) => x.dBound(s, ${alias}_parse))`,
+    dec: binding.xmlLexical
+      ? `(s) => x.dBound(s, ${alias}_parse)`
+      : `x.orNil((s) => x.dBound(s, ${alias}_parse))`,
     enc: `(v) => x.eBound(v, ${alias}_format)`,
     textual: false,
   };
@@ -235,6 +237,51 @@ interface ModelPlan {
   readonly codec: string;
 }
 
+function sameDeclaration(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && sameDeclaration(a[key], b[key]));
+}
+
+interface FlatSequence {
+  readonly rules: readonly XmlRule[];
+  readonly canWrite: boolean;
+}
+
+function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolean): FlatSequence | undefined {
+  if (!Array.isArray(groups) || groups.length !== 1) return undefined;
+  const group = groups[0] as { readonly kind?: unknown; readonly members?: unknown } | null;
+  if (group === null || typeof group !== "object" || group.kind !== "sequence" ||
+      Object.keys(group).some((key) => key !== "kind" && key !== "members")) return undefined;
+  if (!Array.isArray(group.members) || group.members.length === 0 ||
+      group.members.some((member) => member === null || typeof member !== "object" ||
+        member.kind !== "element" || !Array.isArray(member.name) || typeof member.to !== "string")) return undefined;
+  const members = group.members as XmlRule[];
+  const elements = mapping.rules.filter((rule) => rule.kind === "element");
+  if (elements.length === 0) return { rules: [...mapping.rules, ...members], canWrite: true };
+  if (sameDeclaration(elements, members)) return { rules: mapping.rules, canWrite: true };
+  const byMember = new Map(elements.map((rule) => [rule.to, rule] as const));
+  if (members.some((rule) => byMember.has(rule.to) && !sameDeclaration(byMember.get(rule.to), rule))) {
+    return undefined;
+  }
+  const imported = members.filter((rule) => !byMember.has(rule.to));
+  return { rules: [...mapping.rules, ...imported], canWrite: ordered };
+}
+
+function omittedSequenceRules(rules: readonly XmlRule[], groups: unknown): boolean {
+  if (!Array.isArray(groups)) return false;
+  return groups.some((group) => {
+    if (group === null || typeof group !== "object") return false;
+    if (group.kind === "element") return !rules.some((rule) => sameDeclaration(rule, group));
+    return omittedSequenceRules(rules, group.members);
+  });
+}
+
 function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, mapping: XmlMapping): ModelPlan {
   const refuse = new Refusal(id);
   const extra = mapping as XmlMapping & { readonly [name: string]: unknown };
@@ -249,7 +296,11 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     refuse.raise("invalid_ordered_content", "ordered/mixed mapping without an ordered_content member");
   }
   const writerRefusals: string[] = [];
-  if (extra["sequence"] !== undefined) writerRefusals.push("the sequence compositor is not written by this emitter");
+  const sequenceRules = flatSequenceRules(mapping, extra["sequence"], tokens);
+  const readRefusal = sequenceRules === undefined && omittedSequenceRules(mapping.rules, extra["sequence"]);
+  if (extra["sequence"] !== undefined && sequenceRules?.canWrite !== true) {
+    writerRefusals.push("the sequence compositor is not written by this emitter");
+  }
 
   const own = ctx.modelNs(id);
   const attrs = new Map(doc.attributes.map((a) => [a.name, a] as const));
@@ -267,7 +318,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
   let contentSeen = false;
   let anyAttribute: string | null = null;
 
-  for (const rule of mapping.rules) {
+  for (const rule of sequenceRules?.rules ?? mapping.rules) {
     if (rule.kind === "any_attribute") {
       // map_all_attributes: `{kind, to}` only, one per mapping, a non-collection hash attribute.
       for (const key of Object.keys(rule)) {
@@ -415,15 +466,19 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       out = nsOut(target.uri, target.prefix);
     }
     if (rule.cdata === true && child !== null && !writeHooked) refuse.unsupported(`cdata: true on the model-valued rule ${first} has no meaning`, rule.to, first);
+    // A native sequence of repeated elements maps an omitted rule to an empty
+    // collection. An empty collection emits no occurrences even with render_empty.
+    const repeatedSequence = sequenceRules !== undefined && collection && policy.nil === "omit" && policy.empty === "as_empty";
+    const absentList = repeatedSequence && attr?.default?.present !== true;
     if (readHooked) readHooks.push(`    { kind: "element", names: ${q(names)}, ns: ${accept}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
     else {
       readElems.push(
-        `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}${collection && rule.cdata === true && enc !== null ? ", cdata: true" : ""}, dec: ${dec} },`,
+        `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}${collection && rule.cdata === true && enc !== null ? ", cdata: true" : ""}, dec: ${dec}${absentList ? ", absentList: true" : ""} },`,
       );
     }
     const hookField = writeHooked ? `, hook: { name: ${hookName} }` : "";
     writeElems.push(
-      `    { to: ${q(rule.to ?? "")}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${hookField}${skipsApplied(rule, attr?.default?.present === true)} },`,
+      `    { to: ${q(rule.to ?? "")}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${hookField}${skipsApplied(rule, attr?.default?.present === true)}${repeatedSequence ? ", skipEmptyCollection: true" : ""} },`,
     );
   }
 
@@ -439,6 +494,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     `  any: ${anyAttribute === null ? "null" : q({ to: anyAttribute, claimed: [...new Set(claimedAttrs)].sort(byCodePoint) })},`,
     "  elems: [", ...readElems, "  ],",
     `  content: ${readContent},`,
+    ...(readRefusal ? ['  refusal: "unrealized XML sequence members",'] : []),
     ...(readHooks.length === 0 ? [] : ["  hooks: [", ...readHooks, "  ],"]),
     "};",
   ];

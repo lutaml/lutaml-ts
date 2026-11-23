@@ -287,6 +287,7 @@ export interface ElemRule {
   readonly cdata?: boolean;
   /** all: a cdata: true collection rule with several matching siblings reads every CDATA group of this element. */
   readonly dec: (el: El, all?: boolean) => unknown;
+  readonly absentList?: true;
 }
 
 export interface ContentRule {
@@ -310,6 +311,7 @@ export interface ModelSpec {
   readonly any: { readonly to: string; readonly claimed: readonly string[] } | null;
   readonly elems: readonly ElemRule[];
   readonly content: ContentRule | null;
+  readonly refusal?: string;
   /** Rules whose read is a handwritten hook (custom.from) or has no declared target (hook-only). */
   readonly hooks?: readonly RHook[];
 }
@@ -405,6 +407,7 @@ function withContext<T>(spec: ModelSpec, attribute: string, rule: string, loc: s
 
 /** Reads one element into a model instance following the spec. */
 export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => T): T {
+  if (spec.refusal !== undefined) throw new XmlError("unsupported_mapping", spec.refusal, el.loc).context(spec.id);
   const init: Record<string, unknown> = {};
   for (const rule of spec.attrs) {
     const raw = findAttribute(el, rule);
@@ -474,6 +477,9 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
     } else if (spec.tokens) {
       xmlFail("comments and processing instructions have no ordered-content token", el.loc, "invalid_ordered_content");
     }
+  }
+  for (const rule of spec.elems) {
+    if (rule.absentList === true && !Object.hasOwn(init, rule.to)) setOwn(init, rule.to, []);
   }
   if (spec.content !== null && spec.content.collection && (spec.mixed || spec.ordered) && lacksText(all, children, spec)) {
     // Ruby's XmlElement#text joins the text children into one string when the element has at most one child node, so an
@@ -1002,6 +1008,7 @@ export interface WElem {
   /** Scalar: encodes to text. Model: writes the child element under its parent. */
   readonly enc: ((value: never) => string) | null;
   readonly child: ((w: Writer, host: Node, value: never, name: string, ns: NsOut | null) => Promise<Node>) | null;
+  readonly skipEmptyCollection?: true;
   readonly cdata: boolean;
   readonly nil: Policy;
   readonly empty: Policy;
@@ -1262,7 +1269,7 @@ export async function writeModel<T extends object>(
     }
     const list = items(rule);
     if (rule.collection && list.length === 0) {
-      if (rule.empty !== "omit") writeNil({ ...rule, nil: rule.empty });
+      if (rule.skipEmptyCollection !== true && rule.empty !== "omit") writeNil({ ...rule, nil: rule.empty });
       continue;
     }
     for (const item of list) await writeElem(rule, item);

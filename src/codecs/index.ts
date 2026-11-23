@@ -1,3 +1,4 @@
+import { compileChoices } from "../generator/emit.js";
 import { LmlError } from "../contracts.js";
 import type {
   AttributeSpec,
@@ -224,7 +225,7 @@ function elementWire(ctx: Context, attr: AttributeSpec, disc: Discriminator | un
   if (ctx.mapping(type.id) === undefined) {
     return refuse.unsupported(`referenced model ${type.id} has no ${ctx.format} mapping`, attr.name);
   }
-  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "scalar" };
+  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "hash" };
 }
 
 function attributeWire(ctx: Context, doc: ModelDocument, id: ModelId, attr: AttributeSpec, refuse: Refusal): Wire {
@@ -374,6 +375,18 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     }
   });
   const build = `w.build(m.${cls}, init, ${JSON.stringify(wireKeys)}, m.${cls}.modelId)`;
+  // Ruby key-value ingestion checks empty/missing required collections even
+  // inside a choice. Nonempty choice collections use the source fast path;
+  // their batch counts remain deferred to explicit group validation.
+  const choiceNames = compileChoices(doc, id).names;
+  const eager = doc.attributes
+    .filter((attribute) => choiceNames.has(attribute.name) && attribute.collection !== false && attribute.collection.min > 0)
+    .flatMap((attribute) => {
+      const key = wireKeys[attribute.name];
+      if (key === undefined) return [];
+      const value = `model${access(attribute.name)}`;
+      return [`  if (!Array.isArray(${value}) || ${value}.length === 0) throw new w.WireError("invalid_document", "required choice collection is empty", ${JSON.stringify("/" + key.replaceAll("~", "~0").replaceAll("/", "~1"))}, m.${cls}.modelId);`];
+    });
   return {
     hooked,
     text: [
@@ -381,7 +394,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       "  const o = w.object(v);",
       "  const init: Record<string, unknown> = {};",
       ...decode,
-      ...(hookReads.length === 0 ? [`  return ${build};`] : [`  const model = ${build};`, ...hookReads, "  return model;"]),
+      ...(hookReads.length === 0 && eager.length === 0 ? [`  return ${build};`] : [`  const model = ${build};`, ...eager, ...hookReads, "  return model;"]),
       "}",
       "",
       `export function encode${cls}(x: m.${cls}): w.Rec {`,

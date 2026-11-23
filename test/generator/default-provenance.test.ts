@@ -98,7 +98,9 @@ describe("default provenance across construction, decode and JSON/XML write", ()
     await setup();
     const innerApplied = new models["Inner"]();
     const innerExplicit = new models["Inner"]({ flag: false });
-    expect((await out(make({ inner: innerApplied }))).json).toEqual({ count: "0", inner: {} });
+    // An all-defaults nested model serializes to an empty hash, which canonical Ruby omits under render empty: omit
+    // (measured on lutaml-model 0.8.175, issue-1033/wave1 be46487: Outer.new(inner: Inner.new).to_yaml => "---\ncount: 0\n").
+    expect((await out(make({ inner: innerApplied }))).json).toEqual({ count: "0" });
     expect((await out(make({ inner: innerExplicit }))).json).toEqual({ count: "0", inner: { flag: false } });
     expect((await out(make({ inner: innerExplicit }))).xml).toBe('<outer count="0"><inner flag="false"/></outer>');
     expect((await out(make({ inner: innerApplied }))).xml).toBe('<outer count="0"><inner/></outer>');
