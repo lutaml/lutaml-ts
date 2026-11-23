@@ -11,12 +11,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const PIN = {
   package: "moxml-ts",
-  version: "0.1.7",
-  // lutaml/moxml-ts main (#37 merge: 0.1.7 + codec faces + comment/CDATA/PI constructors); the repo's package-lock.json must resolve to it.
-  commit: "216d56f93b733e6408772b607dbb4c5bbd489080",
+  version: "0.1.8",
+  // lutaml/moxml-ts main at the leptris-wasm v1.9.0 / moxml-wasm v0.1.8 train; the repo's package-lock.json must resolve to it.
+  commit: "77d01eb8d5008666f894868bb80f617ce990b5a2",
   // First 16 hex chars of the sha256 of the vendored wasm bundles (no .pin files ship in the install).
   leptrisWasm: "57248e229bf3303f",
-  moxmlWasm: "ab138c968ba2e035",
+  moxmlWasm: "d2d2627c20c462ed",
 };
 const UP = "lutaml/moxml-ts (src/document.ts)";
 const NS = "lutaml/leptris-rs#22 (namespace/attribute/capability follow-through)";
@@ -28,7 +28,7 @@ async function load() {
     return await import("moxml-ts");
   } catch (cause) {
     const e = new Error(
-      "MOXML_TS_UNAVAILABLE: moxml-ts is not installed (not on npm; run `npm ci` (moxml-ts is a git dependency at lutaml/moxml-ts main " +
+      "MOXML_TS_UNAVAILABLE: moxml-ts is not installed (not on npm; run `npm ci` (moxml-ts is a git dependency at lutaml/moxml-ts#9 " +
         PIN.commit.slice(0, 7) + "; see docs/xml-capabilities.md): " +
         String(cause.message).split("\n")[0],
     );
@@ -163,7 +163,7 @@ export async function runProbe() {
     { kinds: [KIND.text, KIND.element, KIND.text, KIND.cdata, KIND.cdata, KIND.text, KIND.comment, KIND.pi], ws: "\n  ", adjacentText: " t " },
     { kinds: seq, ws: mixed.root().children()[0].text(), adjacentText: mixed.root().children()[2].text() },
     "children() returns text/element/CDATA/comment/PI in document order; whitespace-only text is preserved; adjacent CDATA sections stay separate nodes");
-  add("MIX-02", "mixed-content", "supported",
+  add("MIX-02", "mixed-content", "partial",
     { cdataText: "c<>", viaXPath: "c<>", comment: "k", count: 8 },
     {
       cdataText: mixed.root().children()[3].text(),
@@ -171,7 +171,7 @@ export async function runProbe() {
       comment: mixed.root().children()[6].text(),
       count: mixed.xpathCount("/a/node()"),
     },
-    "CDATA nodes are identifiable (kind 4); Node.text() reads CDATA and comment data (leptris-wasm 1.9.0), and XPath string(/path/node()[i]) agrees");
+    "CDATA and comment nodes (kinds 4, 3) now return their data from Node.text(); it is also reachable via XPath string(/path/node()[i])");
   add("MIX-03", "mixed-content", "supported", { elementText: "t1xcd<>t2" },
     { elementText: (await m.parse('<a>t1<p:b xmlns:p="u">x</p:b><![CDATA[cd<>]]>t2</a>')).root().text() },
     "element.text() is the concatenated string-value, not mixed-content-aware: codecs need children() for order");
@@ -200,7 +200,7 @@ export async function runProbe() {
   add("BLD-04", "builder", "absent",
     { missing: ["removeAttribute"] },
     { missing: ["createCData", "createComment", "createProcessingInstruction", "removeAttribute"].filter((n) => typeof m.Document.prototype[n] !== "function" && typeof m.Node.prototype[n] !== "function") },
-    "builder emits CDATA, comments and PIs (createCData/createComment/createProcessingInstruction) but cannot remove an attribute. createElementNS/setAttributeNS/declareNamespace now exist (BLD-05)", NS);
+    "the builder can now create CDATA, comments and PIs (this repo's writer still refuses CDATA output); it still cannot remove an attribute. createElementNS/setAttributeNS/declareNamespace exist (BLD-05)", NS);
   const nb = await m.createDocument();
   const nr = nb.createElementNS("urn:p", "p:r");
   nr.setAttributeNS("urn:q", "q:z", "1");
@@ -210,6 +210,16 @@ export async function runProbe() {
   add("BLD-05", "builder", "supported",
     { xml: '<p:r xmlns:p="urn:p" xmlns:q="urn:q" q:z="1"><p:c xmlns:p="urn:p"/><u/></p:r>' }, { xml: nb.toXml() },
     "createElementNS/setAttributeNS declare the prefix; a child created with createElementNS repeats a declaration already in scope (callers that want compact output use createElement with the bound prefix, as the 07b writer does)");
+  const ws = await m.parse('<a b="x&#10;y&#9;z&#13;w&quot;&amp;&lt;é😀"/>');
+  const wsAttr = ws.root().attributes()[0].value;
+  const wd = await m.createDocument();
+  const wr = wd.createElement("a");
+  wr.setAttribute("b", wsAttr);
+  wd.setRoot(wr);
+  add("SER-04", "serialization", "supported",
+    { read: 'x\ny\tz\rw"&<é😀', parsedWrite: '<a b="x&#10;y&#9;z&#13;w&quot;&amp;&lt;é😀"/>', builtWrite: '<a b="x&#10;y&#9;z&#13;w&quot;&amp;&lt;é😀"/>', reread: 'x\ny\tz\rw"&<é😀' },
+    { read: wsAttr, parsedWrite: ws.toXml(), builtWrite: wd.toXml(), reread: (await m.parse(wd.toXml())).root().attributes()[0].value },
+    "TAB, LF and CR in an attribute value are written as &#9; &#10; &#13; (with quotes, ampersands, < and Unicode escaped) and survive a re-read; the a78091f pin dropped TAB and LF here (leptris-wasm 1.6.5), which is why the writer refused them");
   const cd = await m.parse("<a><![CDATA[x<y]]></a>");
   add("SER-01", "serialization", "supported", { xml: "<a><![CDATA[x<y]]></a>" }, { xml: cd.toXml() },
     "toXml preserves parsed CDATA sections");
@@ -226,10 +236,8 @@ export async function runProbe() {
     const d = await m.parse(xml);
     return { text: d.xpath("string(/*)").slice(0, 40) };
   });
-  add("POL-01", "parser-policy", "supported",
-    { threw: "leptris parse failed (status -2): XML parse error at byte 10: Opening and ending tag mismatch: expected </b>, got </a> (line 1, column 11)" },
-    await x("<a><b></a>"),
-    "malformed XML throws; the message carries the status, the byte offset, the reason and line/column (no model context)");
+  add("POL-01", "parser-policy", "supported", { threw: "leptris parse failed (status -2): XML parse error at byte 10: Opening and ending tag mismatch: expected </b>, got </a> (line 1, column 11)" }, await x("<a><b></a>"),
+    "malformed XML throws; the message now carries the byte offset, line and column after the numeric status (no model context)");
   const xxe = await x('<?xml version="1.0"?><!DOCTYPE a [<!ENTITY x SYSTEM "file:///etc/passwd">]><a>&x;</a>');
   add("POL-02", "parser-policy", "supported", { ok: { text: "&x;" } }, xxe,
     "XXE: external SYSTEM entity is NOT resolved or fetched (no file content in output); the reference stays literal text. It is silently accepted, not rejected");

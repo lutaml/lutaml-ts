@@ -12,6 +12,8 @@ interface Member {
   readonly fieldType: string;
   readonly omittable: boolean;
   readonly filler: string | null;
+  /** The attribute declares a default (initialize_empty alone is not a default for provenance). */
+  readonly defaulted: boolean;
   readonly specLine: string | null;
   /** Collection or hash member: stored as a frozen copy. */
   readonly snapshot: boolean;
@@ -92,7 +94,7 @@ function buildMember(ctx: PlanContext, source: AttributeSpec, modelId: string, l
     `rt.attr(out, o, { name: ${JSON.stringify(attr.name)}, required: ${attr.required}, ` +
     `filled: ${filler !== null}, collection: ${collection}, item: ${plan.check}${choice ? ", choice: true" : ""} });`;
   const snapshot = attr.collection !== false || plan.check === "rt.neutralObject";
-  return { name: attr.name, prop: declName(attr.name), initType, fieldType, omittable, filler, specLine, snapshot };
+  return { name: attr.name, prop: declName(attr.name), initType, fieldType, omittable, filler, defaulted: def !== null, specLine, snapshot };
 }
 
 /**
@@ -109,6 +111,10 @@ function constructorAssign(m: Member, className: string): string {
   if (!m.omittable) value = `v as ${className}Init[${key}]`;
   else if (m.filler === null) value = "v === undefined ? rt.ABSENT : v";
   else value = `v === undefined || v === rt.ABSENT ? ${m.filler} : v`;
+  if (m.defaulted) {
+    // provenance: only a value the declared default filled is "applied" (an explicit equal value is not)
+    return `{ ${read} if (v === undefined || v === rt.ABSENT) applied.push(${key}); ${dst} = ${wrap(value)}; }`;
+  }
   return `{ ${read} ${dst} = ${wrap(value)}; }`;
 }
 
@@ -155,6 +161,10 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
     members.push(buildMember(ctx, attr, modelId, location, choicePlan.names.has(attr.name)));
   });
   const ordered = doc.ordered_content !== undefined;
+  const custom = doc.custom_initialize;
+  if (custom !== undefined && custom !== true) {
+    fail({ reason: "invalid_document", model_id: modelId, location: `/models/${modelId}/custom_initialize`, detail: "custom_initialize must be true when present" });
+  }
   const mandatory = members.some((m) => !m.omittable);
   const filledAny = members.some((m) => m.filler !== null);
   const names = members.map((m) => m.name);
@@ -165,9 +175,31 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   for (const m of members) lines.push(`  readonly ${m.prop}${m.omittable ? "?" : ""}: ${m.initType};`);
   if (ordered) lines.push(`  readonly ${ORDERED_MEMBER}?: rt.Maybe<readonly rt.OrderedContentToken[]>;`);
   lines.push("}", "");
+  if (custom === true) {
+    lines.push(
+      `/** Handwritten initializer for ${className} (custom_initialize): consumer code maps application arguments to declared data. */`,
+      `export type ${className}Initializer<A = never> = (args: A) => ${className}Init;`,
+      "",
+    );
+  }
   lines.push(`export class ${className} {`);
   lines.push(`  static readonly modelId = ${JSON.stringify(modelId)};`);
   lines.push(`  static readonly memberNames: readonly string[] = ${JSON.stringify(names)};`);
+  if (custom === true) {
+    lines.push(
+      "  /** The source model has a handwritten initializer; this class's constructor takes declared data only. */",
+      "  static readonly customInitialize = true;",
+      "  /** Default stub: fails with the custom_initialize error until a handwritten initializer is supplied. */",
+      "  static readonly initializeStub = (_args: unknown): never => rt.unimplementedInitializer(" + JSON.stringify(modelId) + ");",
+      "  /**",
+      "   * Application construction: runs the consumer-provided initializer, then the validating data",
+      "   * constructor. Without an initializer the stub throws; nothing is evaluated from the document.",
+      "   */",
+      `  static construct<A>(args: A, initializer: ${className}Initializer<A> = ${className}.initializeStub): ${className} {`,
+      `    return new ${className}(initializer(args));`,
+      "  }",
+    );
+  }
   lines.push("");
   for (const m of members) lines.push(`  readonly ${m.prop}: ${m.fieldType};`);
   if (ordered) lines.push(`  readonly ${ORDERED_MEMBER}: rt.Maybe<readonly rt.OrderedContentToken[]>;`);
@@ -175,6 +207,8 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   lines.push(`  constructor(init: ${className}Init${mandatory ? "" : " = {}"}) {`);
   lines.push(`    const problems = ${className}.${withChoices ? "validateShape" : "validate"}(init);`);
   lines.push(`    if (problems.length > 0) throw new rt.ValidationError(${className}.modelId, problems);`);
+  const tracked = members.some((m) => m.defaulted);
+  if (tracked) lines.push("    const applied: string[] = [];");
   for (const m of members) lines.push(`    ${constructorAssign(m, className)}`);
   if (ordered) {
     lines.push(
@@ -186,6 +220,7 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
     lines.push(`    const effective = ${className}.${withChoices ? "validateShape" : "validate"}(this);`);
     lines.push(`    if (effective.length > 0) throw new rt.ValidationError(${className}.modelId, effective);`);
   }
+  if (tracked) lines.push("    rt.markApplied(this, applied);");
   lines.push("    Object.freeze(this);", "  }", "");
   lines.push("  /** Reports every violation of an init-like value without throwing. */");
   lines.push(`  static ${withChoices ? "validateShape" : "validate"}(input: unknown): readonly rt.Violation[] {`);

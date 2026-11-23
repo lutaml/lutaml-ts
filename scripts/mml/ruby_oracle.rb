@@ -24,6 +24,7 @@ require "mml/version"
 mod = Mml.const_get("V#{version}")
 mod::Configuration.populate_context! unless mod::Configuration.context
 register = :"mml_v#{version}"
+escape_entities = ENV["LML_XML_ESCAPE_ENTITIES"] == "1"
 klass = mod.const_get(:Math)
 
 def normalize(value, register)
@@ -47,12 +48,14 @@ end
 
 File.open(out, "w") do |io|
   File.readlines(list, chomp: true).each do |file|
-    row = { "file" => file, "mml_version" => Mml::VERSION }
+    row = { "file" => file, "mml_version" => Mml::VERSION,
+            "oracle_options" => { "escape_entities" => escape_entities,
+                                  "dependency_mode" => ENV.fetch("LML_ORACLE_DEPENDENCY_MODE", "unrecorded") } }
     begin
       Timeout.timeout(30) do
         Lutaml::Model::Config.with_adapter(xml: :nokogiri) do
           record = klass.from_xml(File.read(file, encoding: "UTF-8"), register: register)
-          row.merge!("ok" => true, "data" => normalize(record, register), "output" => record.to_xml(register: register))
+          row.merge!("ok" => true, "data" => normalize(record, register), "output" => record.to_xml(register: register, escape_entities: escape_entities))
         end
       end
     rescue Exception => e # rubocop:disable Lint/RescueException -- a corpus run records every failure by name

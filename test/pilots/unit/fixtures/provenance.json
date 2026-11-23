@@ -1,0 +1,88 @@
+{
+  "heads": {
+    "lutaml": "0a3cc0c63f270418d009e105ea591f00d48d028c",
+    "unitsml": "ee09d6d7f87bb2f76069d1cb6ced6c64cbb2ebb1",
+    "oracle": "9db47641d84587df4241d9f5639a92f566f33cfa"
+  },
+  "pins": {
+    "unitsml": "ee09d6d7f87bb2f76069d1cb6ced6c64cbb2ebb1",
+    "oracle": "9db47641d84587df4241d9f5639a92f566f33cfa"
+  },
+  "source_trees_clean": {
+    "lutaml": true,
+    "unitsml": true
+  },
+  "ruby": "3.4.8",
+  "xml_adapter": "Lutaml::Xml::Adapter::NokogiriAdapter",
+  "dependencies": {
+    "nokogiri": "1.19.7",
+    "moxml": "0.6.16"
+  },
+  "options": {
+    "explicit_adapter": "nokogiri",
+    "value_type_registrations": {
+      "xml:id": {
+        "class": "Lutaml::Xml::W3c::XmlIdType",
+        "base": "string",
+        "facets": {}
+      },
+      "xml:lang": {
+        "class": "Lutaml::Xml::W3c::XmlLangType",
+        "base": "string",
+        "facets": {}
+      }
+    },
+    "default_bindings": {
+      "Unitsml::Model::Units::Name@default": {
+        "lang": "en"
+      },
+      "Unitsml::Model::Units::System@default": {
+        "lang": "en"
+      }
+    },
+    "type_bindings": {
+      "xml:id": "Lutaml::Xml::W3c::XmlIdType",
+      "xml:lang": "Lutaml::Xml::W3c::XmlLangType"
+    }
+  },
+  "bundle": {
+    "models": [
+      "Unitsml::Model::Unit@default",
+      "Unitsml::Model::Units::ConversionNote@default",
+      "Unitsml::Model::Units::Conversions@default",
+      "Unitsml::Model::Units::EnumeratedRootUnit@default",
+      "Unitsml::Model::Units::Float64ConversionFrom@default",
+      "Unitsml::Model::Units::Name@default",
+      "Unitsml::Model::Units::RootUnits@default",
+      "Unitsml::Model::Units::SpecialConversionFrom@default",
+      "Unitsml::Model::Units::Symbol@default",
+      "Unitsml::Model::Units::System@default",
+      "Unitsml::Model::Units::WsdlConversionFrom@default"
+    ],
+    "checksum": "sha256:ab95bbb6b621843c834a81646378c72c2c1f2b0cd4fed9bb09ba3ea568cec9ad",
+    "validator": "passed",
+    "verify_materialization_checksum_equal": true,
+    "custom_initialize_models": [],
+    "hooks": [
+      {
+        "model": "Unitsml::Model::Units::Symbol@default",
+        "hooks": [
+          [
+            "xml",
+            "",
+            {
+              "to": "content_to_xml",
+              "from": "content_from_xml"
+            }
+          ]
+        ]
+      }
+    ]
+  },
+  "case_count": 13,
+  "identity_all_true": true,
+  "digests": {
+    "f15-real-unit.json": "75723ce48adc41160d7a5d604c1843f67bf4d982ef43ed79420db742765a38e8",
+    "f15-unit-cases.json": "b630fafade58f04a242be82fc517178a5581acc65e8113f680a387f6a247664d"
+  }
+}

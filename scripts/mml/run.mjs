@@ -4,7 +4,7 @@
 //
 //   node scripts/mml/generate.mjs                       # once: generated mml-ts
 //   node scripts/mml/run.mjs [--corpora DIR] [--out DIR] [--wave1 DIR] [--mml-root DIR]
-//                            [--limit N] [--reuse]
+//                            [--limit N] [--reuse] [--report-only]
 //
 // Corpora (clone read-only, never committed): DIR/{mml2,mml3,mmlcore}-testsuite
 // from github.com/plurimath. Ruby runs in --wave1 (a lutaml-model checkout with
@@ -28,6 +28,7 @@ const mmlRoot = arg("--mml-root", process.env.LML_MML_ROOT ?? "/Users/umerhassan
 const genDir = resolve(arg("--gen", join(REPO, "test/mml/.tmp/mml-gen")));
 const limit = Number(arg("--limit", "0"));
 const reuse = process.argv.includes("--reuse");
+const oracleProfile = { escape_entities: process.argv.includes("--ruby-escape-entities"), dependency_mode: process.env.LML_RUBY_DIRECT === "1" ? "installed-gems" : "bundler" };
 const ALL_SUITES = ["mml2-testsuite", "mml3-testsuite", "mmlcore-testsuite"];
 const onlySuite = arg("--suite", undefined);
 const reportOnly = process.argv.includes("--report-only"); // re-render report.md from results-*.json
@@ -38,7 +39,14 @@ const bothVersions = process.argv.includes("--both-versions");
 const VERSIONS = ["3", "4"];
 const NS = "http://www.w3.org/1998/Math/MathML";
 
-import { canonicalTree, causeOf, squeezeWs, dump, emptyNormal, firstDiff, refusalClass, rubyClass, stable, stripWs } from "./lib.mjs";
+import { buildReport, renderReport } from "./report.mjs";
+
+// Reporting saved results needs neither generated codecs nor the XML dependency.
+if (reportOnly) {
+  writeReport();
+  process.exit(0);
+}
+const { canonicalTree, causeOf, squeezeWs, dump, emptyNormal, firstDiff, refusalClass, rubyClass, stable, stripWs } = await import("./lib.mjs");
 
 function walk(dir, acc = []) {
   for (const name of readdirSync(dir).sort()) {
@@ -54,12 +62,22 @@ function runRuby(version, files, tag) {
   if (!(reuse && existsSync(jsonl))) {
     const list = join(outDir, `files-${tag}.txt`);
     writeFileSync(list, files.join("\n") + "\n");
-    const r = spawnSync("bundle", ["exec", "ruby", "-Ilib", join(REPO, "scripts/mml/ruby_oracle.rb"), version, list, jsonl], {
-      cwd: wave1, env: { ...process.env, LML_MML_ROOT: mmlRoot }, encoding: "utf8", maxBuffer: 1 << 28,
+    // LML_RUBY_DIRECT=1 skips Bundler and uses the installed gems of the active Ruby
+    // (GEM_HOME); the report is then not Bundler-resolved parity.
+    const rubyArgs = ["-Ilib", join(REPO, "scripts/mml/ruby_oracle.rb"), version, list, jsonl];
+    const [cmd, args] = process.env.LML_RUBY_DIRECT === "1" ? ["ruby", rubyArgs] : ["bundle", ["exec", "ruby", ...rubyArgs]];
+    const r = spawnSync(cmd, args, {
+      cwd: wave1, env: { ...process.env, LML_MML_ROOT: mmlRoot, LML_XML_ESCAPE_ENTITIES: oracleProfile.escape_entities ? "1" : "0", LML_ORACLE_DEPENDENCY_MODE: oracleProfile.dependency_mode }, encoding: "utf8", maxBuffer: 1 << 28,
     });
     if (r.status !== 0) throw new Error(`ruby oracle failed (v${version} ${tag}):\n${r.stderr}`);
   }
-  return new Map(readFileSync(jsonl, "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.file, r]));
+  const rows = readFileSync(jsonl, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  for (const row of rows) {
+    if (row.oracle_options?.escape_entities !== oracleProfile.escape_entities || row.oracle_options?.dependency_mode !== oracleProfile.dependency_mode) {
+      throw new Error("cached Ruby oracle mode differs or is unrecorded; use a fresh --out directory");
+    }
+  }
+  return new Map(rows.map((r) => [r.file, r]));
 }
 
 mkdirSync(outDir, { recursive: true });
@@ -143,41 +161,17 @@ for (const version of VERSIONS) {
   }
 }
 
-if (!reportOnly) writeFileSync(join(outDir, `results-${onlySuite ?? "all"}.json`), JSON.stringify({ mml_version: "2.4.7", suite: onlySuite ?? "all", files: all.length, hasNs, results }, null, 1));
+if (!reportOnly) writeFileSync(join(outDir, `results-${onlySuite ?? "all"}.json`), JSON.stringify({ oracle_profile: oracleProfile, mml_version: "2.4.7", suite: onlySuite ?? "all", files: all.length, hasNs, results }, null, 1));
 if (process.argv.includes("--no-report")) process.exit(0);
 
-// ---- report
-// Per-suite runs write results-<suite>.json; a run without --suite writes results-all.json. Keep one kind per --out.
-const merged = readdirSync(outDir).filter((n) => /^results-.*\.json$/.test(n));
-const parts = merged.map((n) => JSON.parse(readFileSync(join(outDir, n), "utf8")));
-const everything = parts.flatMap((p) => p.results);
-const totalFiles = parts.reduce((n, p) => n + p.files, 0);
-const totalNs = parts.reduce((n, p) => n + p.hasNs, 0);
-const lines = [];
-const group = (rows, key) => rows.reduce((m, r) => m.set(key(r), (m.get(key(r)) ?? 0) + 1), new Map());
-lines.push(`# mml pilot run: ${totalFiles} .mml files (${totalNs} already namespaced), mml 2.4.7\n`);
-lines.push("| suite | version | variant | files | pass | refused: doctype | refused by ts only | both refuse | mismatch |");
-lines.push("|---|---|---|---|---|---|---|---|---|");
-for (const suite of ALL_SUITES) for (const version of VERSIONS) for (const variant of Object.keys(variants)) {
-  const rows = everything.filter((r) => r.suite === suite && r.version === version && r.variant === variant);
-  if (rows.length === 0) continue;
-  const c = (o) => rows.filter((r) => r.outcome === o).length;
-  lines.push(`| ${suite} | v${version} | ${variant} | ${rows.length} | ${c("pass")} | ${c("refused")} | ${c("refused_by_ts_only")} | ${c("both_refuse")} | ${c("mismatch")} |`);
+// ---- report: reject overlapping or inconsistent saved runs before writing totals.
+writeReport();
+function writeReport() {
+  const names = readdirSync(outDir).filter((n) => /^results-.*\.json$/.test(n)).sort();
+  const parts = names.map((n) => JSON.parse(readFileSync(join(outDir, n), "utf8")));
+  const report = buildReport(parts);
+  const markdown = renderReport(report);
+  writeFileSync(join(outDir, "report.json"), JSON.stringify(report, null, 2) + "\n");
+  writeFileSync(join(outDir, "report.md"), markdown);
+  console.log(markdown);
 }
-lines.push("\n## Classes (outcome != pass), with one example each\n");
-const classes = new Map();
-for (const r of everything) {
-  if (r.outcome === "pass") continue;
-  const k = `${r.outcome} | ${r.cls}`;
-  const e = classes.get(k) ?? { n: 0, example: r };
-  e.n++; classes.set(k, e);
-}
-for (const [k, e] of [...classes].sort((a, b) => b[1].n - a[1].n)) {
-  lines.push(`- ${e.n}x ${k}\n    e.g. ${e.example.suite} v${e.example.version} ${e.example.variant} ${e.example.file}${e.example.detail ? `\n    ${e.example.detail.slice(0, 200)}` : ""}`);
-}
-const passRows = everything.filter((r) => r.outcome === "pass");
-const slow = [...everything].sort((a, b) => b.ms - a.ms).slice(0, 5);
-lines.push(`\nslowest TS parse+write+compare: ${slow.map((r) => `${r.ms}ms ${r.file}`).join("; ")}`);
-lines.push(`\npass: ${passRows.length}; byte-identical output among pass: ${passRows.filter((r) => r.checks.bytes).length}; data exact (no collapse): ${passRows.filter((r) => r.checks.dataExact).length}; tree exact including formatting whitespace: ${passRows.filter((r) => r.checks.treeExact).length}`);
-writeFileSync(join(outDir, "report.md"), lines.join("\n") + "\n");
-console.log(lines.join("\n"));

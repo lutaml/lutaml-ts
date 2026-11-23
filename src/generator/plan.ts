@@ -184,10 +184,16 @@ export class PlanContext {
       const base = this.builtinPlan(spec.base, modelId, attribute);
       const facetNames = Object.keys(spec.facets).sort(compareBytes);
       if (facetNames.length === 0) {
-        plan = base;
-      } else {
-        plan = this.facetPlan(id, spec.base, base, spec.facets, facetNames, modelId, attribute);
+        // An alias with no facets is still a named type: without a trusted binding
+        // it must not silently degrade to its builtin base.
+        return fail({
+          reason: "missing_type_binding",
+          model_id: modelId,
+          attribute,
+          detail: `value type ${id} on ${spec.base} needs a trusted binding`,
+        });
       }
+      plan = this.facetPlan(id, spec.base, base, spec.facets, facetNames, modelId, attribute);
     }
     const named = this.hoist(plan);
     this.valueConsts.set(id, named);

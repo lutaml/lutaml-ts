@@ -48,9 +48,9 @@ export const RESERVED_ATTRIBUTE_NAMES: readonly string[] = [
 const MAPPING_OBJECT_KEYS = ["root_mappings", "child_mappings"];
 const XML_PREFIX = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
-const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content", "choices"];
+const MODEL_KEYS = ["lml", "model", "register", "attributes", "mappings", "ordered_content", "choices", "custom_initialize"];
 const ATTRIBUTE_KEYS = ["name", "type", "required", "collection", "default", "initialize_empty", "values", "discriminator"];
-const RULE_KEYS = ["kind", "name", "key", "to", "namespace", "prefix", "cdata", "render", "discriminator", "members", "min", "max", "child_mappings", "root_mappings", "polymorphic_map"];
+const RULE_KEYS = ["kind", "name", "key", "to", "namespace", "prefix", "cdata", "render", "discriminator", "members", "min", "max", "child_mappings", "root_mappings", "polymorphic_map", "custom"];
 const FORMAT_KEYS = ["root", "namespace", "rules", "root_mappings", "child_mappings", "ordered", "mixed_content", "sequence"];
 const COMPOSITOR_KINDS = ["sequence", "choice"];
 const EXECUTABLE_RULE_KEYS = ["with", "custom_methods", "delegate", "transform", "proc", "lambda", "method", "callback"];
@@ -188,9 +188,13 @@ function modelV2(node: Obj, at: string, expectedId?: string): string {
     fail("invalid_document", `key ${expectedId} does not match model ID ${id}`, at, { model_id: id });
   }
   attributesV2(node["attributes"], at, id);
-  if (has(node, "mappings")) mappingsV2(node["mappings"], at, id, node["attributes"]);
+  if (has(node, "mappings")) {
+    mappingsV2(node["mappings"], at, id, node["attributes"]);
+    hookDirections(node["mappings"], at, id);
+  }
   orderedContent(node, at, id);
   if (has(node, "choices")) modelChoices(node["choices"], node["attributes"], at + pointer("choices"), id);
+  customInitialize(node, at, id);
   return id;
 }
 
@@ -237,7 +241,6 @@ function modelChoice(group: Tree | undefined, names: ReadonlySet<string>, at: st
 
 function rejectExecutableFlags(node: Obj, at: string): void {
   const flags: readonly (readonly [string, ErrorCode])[] = [
-    ["custom_initialize", "custom_initialize"],
     ["imperative_element_order", "imperative_element_order"],
   ];
   for (const [key, reason] of flags) {
@@ -522,6 +525,68 @@ function ruleV2(rule: Tree | undefined, at: string, id: string, format: string):
   if (has(rule, "key")) expectArray(rule["key"], `${at}/key`);
   if (has(rule, "render")) render(rule["render"], `${at}/render`, id, format);
   if (has(rule, "discriminator")) discriminatorShape(rule["discriminator"], `${at}/discriminator`, id);
+  if (has(rule, "custom")) customSerialization(rule["custom"], `${at}/custom`, id, format, kind);
+}
+
+const HOOK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** XML rule kinds that may carry hook names; any_attribute, sequence and choice may not. */
+const XML_HOOK_KINDS = ["content", "element", "attribute"];
+
+/** Optional per-rule hook names; bodies never travel in a document. */
+function customSerialization(node: Tree | undefined, at: string, id: string, format: string, kind?: Tree): void {
+  if (format === "xml" && !(typeof kind === "string" && XML_HOOK_KINDS.includes(kind))) {
+    fail("unsupported_mapping", `custom serialization hooks are not supported on xml ${describe(kind)} rules`, at, { model_id: id, format });
+  }
+  if (!isObj(node) || Object.keys(node).length === 0) {
+    fail("invalid_document", "custom must be a non-empty object of hook names", at, { model_id: id, format });
+  }
+  for (const key of Object.keys(node)) {
+    if (key !== "to" && key !== "from") {
+      fail("invalid_document", `unknown custom key ${key}`, at + pointer(key), { model_id: id, format });
+    }
+  }
+  for (const key of ["to", "from"]) {
+    if (!has(node, key)) continue;
+    const name = node[key];
+    if (typeof name !== "string" || !HOOK_NAME.test(name)) {
+      fail("invalid_document", `custom ${key} must match ${HOOK_NAME.source}`, at + pointer(key), { model_id: id, format });
+    }
+  }
+  if (node["to"] === node["from"]) {
+    fail("invalid_document", "custom to and from must differ", at, { model_id: id, format });
+  }
+}
+
+/** A hook name has one direction and one signature kind (key-value or xml) per model, across every rule and format. */
+function hookDirections(mappings: Tree | undefined, at: string, id: string): void {
+  if (!isObj(mappings)) return;
+  const seen = new Map<string, string>();
+  const visit = (rules: readonly Tree[], loc: string, signature: string): void => {
+    rules.forEach((rule, i) => {
+      if (!isObj(rule)) return;
+      if (Array.isArray(rule["members"])) visit(rule["members"] as readonly Tree[], `${loc}/${i}/members`, signature);
+      const custom = rule["custom"];
+      if (!isObj(custom)) return;
+      for (const direction of ["to", "from"]) {
+        const name = custom[direction];
+        if (typeof name !== "string") continue;
+        const before = seen.get(name);
+        const now = `${direction}:${signature}`;
+        if (before !== undefined && before !== now) {
+          const what = before.split(":")[0] !== direction ? "both a read and a write hook" : "both a key-value and an xml hook";
+          fail("invalid_document", `hook ${name} is used as ${what}`, `${loc}/${i}/custom/${direction}`, { model_id: id });
+        }
+        seen.set(name, now);
+      }
+    });
+  };
+  for (const format of Object.keys(mappings)) {
+    const mapping = mappings[format];
+    if (isObj(mapping) && Array.isArray(mapping["rules"])) {
+      visit(mapping["rules"] as readonly Tree[], `${at}/mappings${pointer(format)}/rules`, format === "xml" ? "xml" : "kv");
+    }
+  }
 }
 
 function namespace(node: Tree | undefined, at: string, id: string, format: string): void {
@@ -560,6 +625,15 @@ function orderedContent(node: Obj, at: string, id: string): void {
   if (!valid) {
     fail("invalid_ordered_content", `expected {member: ${ORDERED_CONTENT_MEMBER}, version: 1}`,
       at + pointer("ordered_content"), { model_id: id });
+  }
+}
+
+/** Optional marker: only `true` is valid; the body stays handwritten per target. */
+function customInitialize(node: Obj, at: string, id: string): void {
+  if (!has(node, "custom_initialize")) return;
+  if (node["custom_initialize"] !== true) {
+    fail("invalid_document", "custom_initialize must be true when present",
+      at + pointer("custom_initialize"), { model_id: id });
   }
 }
 
