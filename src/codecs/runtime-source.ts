@@ -24,7 +24,12 @@ export function withHooks<S, T>(hooks: object, state: S, fn: () => T): T {
   const outer = hookScope;
   hookScope = { hooks: hooks as HookTable, state };
   try {
-    return fn();
+    const out = fn();
+    // The scope is ambient and restored when fn returns, so it can never cover work that finishes later.
+    if (typeof out === "object" && out !== null && typeof (out as { then?: unknown }).then === "function") {
+      return wireFail("withHooks is synchronous and cannot scope an asynchronous operation (custom_serialization); the key-value codecs are synchronous", "custom_serialization");
+    }
+    return out;
   } finally {
     hookScope = outer;
   }

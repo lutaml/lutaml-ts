@@ -61,4 +61,10 @@ describe("custom.from on a required declared attribute (KV)", () => {
     const model = json?.["withHooks"]({ [ID]: { n_from_json: () => 7n } }, {}, () => json?.["codecReq"].decode({ n: "x" }));
     expect(json?.["codecReq"].encode(model)).toEqual({ n: "7" });
   });
+
+  it("the ambient scope is synchronous: a Promise-returning operation is refused by name", async () => {
+    const { json } = await generated(bundle(), { json: true });
+    const hooks = { [ID]: { n_from_json: () => 1n } };
+    expect(() => json?.["withHooks"](hooks, {}, async () => json?.["codecReq"].decode({ n: "1" }))).toThrow(/synchronous.*custom_serialization/);
+  });
 });
