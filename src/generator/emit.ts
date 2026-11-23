@@ -12,6 +12,8 @@ interface Member {
   readonly fieldType: string;
   readonly omittable: boolean;
   readonly filler: string | null;
+  /** The attribute declares a default (initialize_empty alone is not a default for provenance). */
+  readonly defaulted: boolean;
   readonly specLine: string | null;
   /** Collection or hash member: stored as a frozen copy. */
   readonly snapshot: boolean;
@@ -92,7 +94,7 @@ function buildMember(ctx: PlanContext, source: AttributeSpec, modelId: string, l
     `rt.attr(out, o, { name: ${JSON.stringify(attr.name)}, required: ${attr.required}, ` +
     `filled: ${filler !== null}, collection: ${collection}, item: ${plan.check} });`;
   const snapshot = attr.collection !== false || plan.check === "rt.neutralObject";
-  return { name: attr.name, prop: declName(attr.name), initType, fieldType, omittable, filler, specLine, snapshot };
+  return { name: attr.name, prop: declName(attr.name), initType, fieldType, omittable, filler, defaulted: def !== null, specLine, snapshot };
 }
 
 /**
@@ -109,6 +111,10 @@ function constructorAssign(m: Member, className: string): string {
   if (!m.omittable) value = `v as ${className}Init[${key}]`;
   else if (m.filler === null) value = "v === undefined ? rt.ABSENT : v";
   else value = `v === undefined || v === rt.ABSENT ? ${m.filler} : v`;
+  if (m.defaulted) {
+    // provenance: only a value the declared default filled is "applied" (an explicit equal value is not)
+    return `{ ${read} if (v === undefined || v === rt.ABSENT) applied.push(${key}); ${dst} = ${wrap(value)}; }`;
+  }
   return `{ ${read} ${dst} = ${wrap(value)}; }`;
 }
 
@@ -173,6 +179,8 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
   lines.push(`  constructor(init: ${className}Init${mandatory ? "" : " = {}"}) {`);
   lines.push(`    const problems = ${className}.validate(init);`);
   lines.push(`    if (problems.length > 0) throw new rt.ValidationError(${className}.modelId, problems);`);
+  const tracked = members.some((m) => m.defaulted);
+  if (tracked) lines.push("    const applied: string[] = [];");
   for (const m of members) lines.push(`    ${constructorAssign(m, className)}`);
   if (ordered) {
     lines.push(
@@ -184,6 +192,7 @@ export function emitClass(ctx: PlanContext, className: string, modelId: ModelId,
     lines.push(`    const effective = ${className}.validate(this);`);
     lines.push(`    if (effective.length > 0) throw new rt.ValidationError(${className}.modelId, effective);`);
   }
+  if (tracked) lines.push("    rt.markApplied(this, applied);");
   lines.push("    Object.freeze(this);", "  }", "");
   lines.push("  /** Reports every violation of an init-like value without throwing. */");
   lines.push("  static validate(input: unknown): readonly rt.Violation[] {");

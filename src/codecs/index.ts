@@ -261,6 +261,9 @@ function policies(rule: KeyValueRule, refuse: Refusal): Policies {
   return { nil: pick("nil"), empty: pick("empty") };
 }
 
+/** Ruby's render_default: an APPLIED default is written only when the rule says render default true. */
+const rendersDefault = (rule: KeyValueRule): boolean => rule.render?.["default"] === true;
+
 function validateMapping(mapping: KeyValueMapping, doc: ModelDocument, refuse: Refusal): void {
   const extra = mapping as KeyValueMapping & { readonly [name: string]: unknown };
   for (const name of Object.keys(extra)) {
@@ -361,8 +364,10 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     if (custom?.to !== undefined) {
       encode.push(`  w.writeHook(${modelId}, ${JSON.stringify(custom.to)}, ${JSON.stringify(first)})(x, out, w.hookState());`);
     } else if (rule.to !== undefined && wire !== undefined && policy !== undefined) {
+      // an applied default is skipped unless render.default is true (provenance, never value equality)
+      const guard = attr?.default?.present === true && !rendersDefault(rule) ? `if (!w.wasApplied(x, ${JSON.stringify(rule.to)})) ` : "";
       encode.push(
-        `  w.render(out, ${JSON.stringify(first)}, x${access(rule.to)}, ${wire.enc}, ${JSON.stringify(policy.nil)}, ${JSON.stringify(policy.empty)}, ${JSON.stringify(wire.shape)});`,
+        `  ${guard}w.render(out, ${JSON.stringify(first)}, x${access(rule.to)}, ${wire.enc}, ${JSON.stringify(policy.nil)}, ${JSON.stringify(policy.empty)}, ${JSON.stringify(wire.shape)});`,
       );
     } else {
       encode.push(`  w.writeHook(${modelId}, null, ${JSON.stringify(first)});`);

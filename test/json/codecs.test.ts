@@ -242,9 +242,11 @@ describe("portable exact wire profile", () => {
     expect(codeOf(() => c.parse('{"order_id":"o","price":"1e3"}'))).toBe("invalid_document");
   });
 
-  it("applies the nil policy to absent and null alike, and renders defaults", async () => {
+  it("applies the nil policy to absent and null alike; an applied default is not rendered, an explicit one is", async () => {
     const c = await codec();
-    expect(JSON.parse(c.stringify(c.parse('{"order_id":"o"}')))).toEqual({ order_id: "o", price: null, currency: "USD" });
+    // currency defaults to USD with render default false: the applied default is not written (Ruby using_default?)
+    expect(JSON.parse(c.stringify(c.parse('{"order_id":"o"}')))).toEqual({ order_id: "o", price: null });
+    expect(JSON.parse(c.stringify(c.parse('{"order_id":"o","currency":"USD"}')))).toEqual({ order_id: "o", price: null, currency: "USD" });
     expect(JSON.parse(c.stringify(c.parse('{"order_id":"o","price":null,"currency":null}')))).toEqual({ order_id: "o", price: null });
   });
 
@@ -260,7 +262,7 @@ describe("portable exact wire profile", () => {
     expect(JSON.parse(c.stringify(value))).toEqual({
       order_id: "o", price: null, blob: "AQID", raw: "0aff", qn: { namespace: null, local: "a" }, when: "2024-02-29",
       extras: { k: [1, null] }, currency: "EUR", code: "ABC12",
-      lines: [{ sku: "s", units: "3" }, { sku: "t", units: "1" }], open: false,
+      lines: [{ sku: "s", units: "3" }, { sku: "t" }], open: false, // line t: units is the applied default 1, not written
     });
     expect(Object.keys(JSON.parse(c.stringify(value)) as object)[0]).toBe("order_id");
   });

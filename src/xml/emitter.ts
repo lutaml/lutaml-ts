@@ -188,6 +188,9 @@ function nsOut(uri: string | null, prefix: string | null): string {
   return uri === null ? "null" : `{ uri: ${q(uri)}, prefix: ${prefix === null ? "null" : q(prefix)} }`;
 }
 
+/** Ruby's render_default: an APPLIED default is written only when the rule says render default true. */
+const skipsApplied = (rule: XmlRule, declared: boolean): string => (declared && rule.render?.["default"] !== true ? ", skipApplied: true" : "");
+
 function policyOf(rule: XmlRule, refuse: Refusal): { nil: string; empty: string } {
   const render = rule.render ?? {};
   for (const name of Object.keys(render)) {
@@ -316,7 +319,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       if (readHooked) readHooks.push(`    { kind: "content", names: [], ns: ${acceptList([null])}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
       else readContent = `{ to: ${q(rule.to)}, collection: ${collection} }`;
       if (writeHooked) writeHooks.push(`    { kind: "content", rule: "content", name: ${hookName} },`);
-      else writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true} }`;
+      else writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true}${skipsApplied(rule, attr?.default?.present === true)} }`;
       if (rule.cdata === true && !writeHooked) writerRefusals.push(`content rule ${rule.to} is cdata`);
       continue;
     }
@@ -341,7 +344,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       if (writeHooked) writeHooks.push(`    { kind: "attribute", rule: ${q(first)}, name: ${hookName} },`);
       else {
         writeAttrs.push(
-          `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${nsOut(uri, prefix)}, enc: ${(scalar as Scalar).enc}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)} },`,
+          `    { to: ${q(rule.to)}, name: ${q(first)}, ns: ${nsOut(uri, prefix)}, enc: ${(scalar as Scalar).enc}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${skipsApplied(rule, attr?.default?.present === true)} },`,
         );
       }
       continue;
@@ -421,7 +424,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     }
     const hookField = writeHooked ? `, hook: { name: ${hookName} }` : "";
     writeElems.push(
-      `    { to: ${q(rule.to ?? "")}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${hookField} },`,
+      `    { to: ${q(rule.to ?? "")}, name: ${q(first)}, ns: ${out}, collection: ${collection}, enc: ${enc ?? "null"}, child: ${child ?? "null"}, cdata: ${rule.cdata === true}, nil: ${q(policy.nil)}, empty: ${q(policy.empty)}${hookField}${skipsApplied(rule, attr?.default?.present === true)} },`,
     );
   }
 
