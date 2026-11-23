@@ -624,18 +624,15 @@ describe.skipIf(!available)("single-child text and whitespace-only literal token
     expect([spaced.value, spaced.__lml_content]).toEqual([[" "], [text(0)]]); // preserved: a real text node
   });
 
-  // Ruby's XmlElement#text returns the list of text nodes (not a string) once an element has more than one child node,
-  // even for a single-valued string attribute: mml 2.4.7 annotation `a<span/>b` holds ["a","b"] and `\n <span/>\n ` holds
-  // two whitespace strings. A TS string cannot hold that list and joining it would change the data, so it refuses by
-  // name. Case: mmlcore presentation-markup/mrow/legacy-mrow-like-elements-002.math0.mml (no comment in the input).
-  it("refuses single-valued text content spread over several child nodes, and keeps one node or only an element", { timeout: 180_000 }, async () => {
+  it("keeps single-valued content as a string across unmapped children", { timeout: 180_000 }, async () => {
     const txt = await codec("Txt@default");
     const read = async (xml: string) => (dump(await txt.parse(xml)) as { value: unknown }).value;
     expect(await read("<x>ab</x>")).toBe("ab");
-    expect(await read("<x><span/></x>")).toBe(""); // Ruby: "" for a lone element child
-    for (const xml of ["<x>a<span/>b</x>", "<x>a<span/></x>", "<x>\n <span/>\n </x>"]) {
-      expect(await infoOf(() => txt.parse(xml)), xml).toMatchObject({ reason: "invalid_document", model_id: "Txt@default", attribute: "value" });
-    }
+    expect(await read("<x><span/></x>")).toBe("");
+    expect(await read("<x>a<span/>b</x>")).toBe("ab");
+    expect(await read("<x>a<span/></x>")).toBe("a");
+    expect(await read("<x>\n <span/>\n </x>")).toBe("\n \n ");
+    expect(await read(await txt.stringify(await txt.parse("<x>a<span/>b</x>")))).toBe("ab");
   });
 
   // Valid XML keeps a whitespace character written as a character reference in an attribute value (&#10; stays LF);

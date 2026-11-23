@@ -433,9 +433,6 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       const list = spec.mixed || spec.ordered ? texts : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
       if (list.length > 0) setOwn(init, content.to, list);
     } else {
-      if (all.length > 1 && textNodes > 0) {
-        throw new XmlError("invalid_document", "single-valued text content spread over " + all.length + " child nodes; Ruby reads it as a list", el.loc).context(spec.id, content.to);
-      }
       setOwn(init, content.to, textOf(el, true));
     }
   }
