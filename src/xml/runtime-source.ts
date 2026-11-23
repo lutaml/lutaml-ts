@@ -283,7 +283,10 @@ export interface ElemRule {
   readonly collection: boolean;
   /** The rule reads a scalar (string-like) child, not a model. */
   readonly leaf: boolean;
-  readonly dec: (el: El) => unknown;
+  /** cdata: true on a collection rule: Ruby keeps every CDATA group of the element as an item (see readCollectionCdata). */
+  readonly cdata?: boolean;
+  /** all: a cdata: true collection rule with several matching siblings reads every CDATA group of this element. */
+  readonly dec: (el: El, all?: boolean) => unknown;
 }
 
 export interface ContentRule {
@@ -437,12 +440,17 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       if (rule === undefined) continue;
       const taken = counts.get(rule.to) ?? 0;
       if (!rule.collection && taken > 0) repeatedSingleton(spec, rule, child);
-      const value = withContext(spec, rule.to, rule.names[0] ?? "", child.loc, () => rule.dec(child));
+      // Canonical Ruby treats a collection rule differently once more than one element matches it: a cdata: true rule
+      // then keeps every CDATA group of an element (only the first group when a single element matches), and an item
+      // with several child nodes stays a nil item at its index (a single matching element collapses to no item).
+      const all = rule.collection && rule.leaf && children.filter((c) => matchesElem(rule, c)).length > 1;
+      const value = withContext(spec, rule.to, rule.names[0] ?? "", child.loc, () => rule.dec(child, all));
       counts.set(rule.to, taken + 1);
       if (rule.collection) {
         if (value === null) continue;
         const list = (init[rule.to] ??= []) as unknown[];
-        list.push(value);
+        if (all && rule.cdata === true) list.push(...(value as unknown[]));
+        else list.push(value);
       } else {
         setOwn(init, rule.to, value);
       }
@@ -566,12 +574,19 @@ interface LogicalNode {
 
 function logicalNodes(el: El, all: readonly Kid[]): LogicalNode[] {
   const out: LogicalNode[] = [];
+  let split = false;
   for (const kid of all) {
-    if (kid.kind === 5) continue; // processing instructions are not content-bearing
+    // A processing instruction is not a content node (Ruby counts none), but it does keep the CDATA sections on either
+    // side of it apart: they are two groups, not one merged section.
+    if (kid.kind === 5) {
+      split = true;
+      continue;
+    }
     const text = kid.kind === KIND_TEXT ? (kid.node.text() ?? "") : kid.kind === KIND_CDATA ? cdataText(el, kid) : "";
     const last = out[out.length - 1];
-    if (kid.kind === KIND_CDATA && last?.kind === KIND_CDATA) out[out.length - 1] = { kind: KIND_CDATA, text: last.text + text };
+    if (kid.kind === KIND_CDATA && last?.kind === KIND_CDATA && !split) out[out.length - 1] = { kind: KIND_CDATA, text: last.text + text };
     else out.push({ kind: kid.kind, text });
+    split = false;
   }
   return out;
 }
@@ -719,16 +734,28 @@ export function orNil<T>(dec: (s: string, el: El) => T): (s: string, el: El) => 
 }
 
 /** Element rule value for a scalar: its direct text through a decoder. */
-export function leaf(dec: (s: string, el: El) => unknown, cdata = false): (el: El) => unknown {
-  return (el) => {
+export function leaf(dec: (s: string, el: El) => unknown, cdata = false): (el: El, all?: boolean) => unknown {
+  return (el, all = false) => {
     // Canonical Ruby (cdata oracle): an ordinary element rule reads its ONE child node (text or CDATA) and holds nothing
     // when there are several; a cdata: true rule reads the first CDATA section only and holds nothing without one.
     const nodes = logicalNodes(el, kids(el));
     if (cdata) {
+      if (all) return nodes.filter((n) => n.kind === KIND_CDATA && n.text !== "").map((n) => dec(n.text, el));
       const first = nodes.find((n) => n.kind === KIND_CDATA);
       return first === undefined || first.text === "" ? null : dec(first.text, el);
     }
-    if (nodes.length > 1) return null;
+    if (nodes.length > 1) {
+      // Among several matching elements Ruby keeps this nil as an item at its index. A typed list cannot hold nil, and
+      // dropping it would shift every later index: refuse by name rather than drop. (all is set only for such a collection.)
+      if (all) {
+        throw new XmlError(
+          "invalid_document",
+          "collection item with " + nodes.length + " child nodes is nil in Ruby; a typed list cannot hold nil, and dropping it would shift later items",
+          el.loc,
+        );
+      }
+      return null;
+    }
     const only = nodes[0];
     return dec(only !== undefined && (only.kind === KIND_TEXT || only.kind === KIND_CDATA) ? only.text : "", el);
   };

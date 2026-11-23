@@ -418,7 +418,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
     if (readHooked) readHooks.push(`    { kind: "element", names: ${q(names)}, ns: ${accept}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
     else {
       readElems.push(
-        `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}, dec: ${dec} },`,
+        `    { to: ${q(rule.to)}, names: ${q(names)}, ns: ${accept}, collection: ${collection}, leaf: ${enc !== null}${collection && rule.cdata === true && enc !== null ? ", cdata: true" : ""}, dec: ${dec} },`,
       );
     }
     const hookField = writeHooked ? `, hook: { name: ${hookName} }` : "";
