@@ -180,3 +180,13 @@ results. `test/mml/report.test.ts` runs this same suite through Vitest, so the
 existing `npm test -- --run` CI command includes it.
 
 `test/mml/mml.test.ts`: the committed `test/mml/fixtures/{oracle.json,v3-mi-mixed.json,v4-mi-mixed.json}` generate, compile under strict tsc and replay the Ruby oracle for the mixed cases; the 4 MB nested-Math graphs are read from `$LML_MML_FIXTURES` (skipped, never passed, when absent). It also unit-tests the comparison helpers and, when a corpus run exists, checks every row has a known outcome and that no mismatch is unclassified.
+
+
+### Portable Ruby text mode
+
+Use `node scripts/mml/run.mjs --ruby-escape-entities ...` with a Ruby checkout
+supporting `to_xml(escape_entities: true)` to compare ordinary XML character
+data. The default retains legacy named-entity passthrough. Every new result
+part/report records this option and whether Ruby used Bundler; mixed profiles
+and reuse of a differently serialized oracle fail. Legacy results remain
+explicitly marked as unrecorded. Raw byte equality stays a separate metric.
