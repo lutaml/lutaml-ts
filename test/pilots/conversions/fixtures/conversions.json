@@ -1,0 +1,961 @@
+{
+  "provenance": {
+    "criterion": "Conversions-only partial A6 evidence (not Unit/Uncertainty)",
+    "heads": {
+      "lutaml": "4fad925d9438ff92089d2086e5d3efebd452713b",
+      "unitsml": "ee09d6d7f87bb2f76069d1cb6ced6c64cbb2ebb1",
+      "oracle": "9db47641d84587df4241d9f5639a92f566f33cfa"
+    },
+    "ruby": "3.4.8",
+    "xml_adapter": "Lutaml::Xml::Adapter::NokogiriAdapter",
+    "nokogiri": "1.19.7",
+    "oracle_corpus_sha256": "e1c326b9af7e07514d5095f5c9ecfb65120b861089d441437659778459822768",
+    "bundle_checksum": "sha256:06444a1723c1507eb61f620342c286e393383fa3fa58faf0a5a55367a95ad409",
+    "value_type_registration": {
+      "xml:id": {
+        "class": "Lutaml::Xml::W3c::XmlIdType",
+        "base": "string",
+        "facets": {}
+      }
+    },
+    "generator": "test/pilots/conversions/generate.rb"
+  },
+  "bundle": {
+    "capabilities": [
+      "xml"
+    ],
+    "lml_bundle": 1,
+    "models": {
+      "Unitsml::Model::Units::ConversionNote@default": {
+        "attributes": [
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "content",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          }
+        ],
+        "lml": 2,
+        "mappings": {
+          "xml": {
+            "namespace": {
+              "mode": "uri",
+              "prefix": "unitsml",
+              "uri": "https://schema.unitsml.org/unitsml/1.0"
+            },
+            "root": {
+              "element": "ConversionNote"
+            },
+            "rules": [
+              {
+                "kind": "content",
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "content"
+              }
+            ]
+          }
+        },
+        "model": "Unitsml::Model::Units::ConversionNote",
+        "register": "default"
+      },
+      "Unitsml::Model::Units::Conversions@default": {
+        "attributes": [
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "float64_conversion_from",
+            "required": false,
+            "type": {
+              "id": "Unitsml::Model::Units::Float64ConversionFrom@default",
+              "kind": "model"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "special_conversion_from",
+            "required": false,
+            "type": {
+              "id": "Unitsml::Model::Units::SpecialConversionFrom@default",
+              "kind": "model"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "wsdl_conversion_from",
+            "required": false,
+            "type": {
+              "id": "Unitsml::Model::Units::WsdlConversionFrom@default",
+              "kind": "model"
+            }
+          }
+        ],
+        "lml": 2,
+        "mappings": {
+          "xml": {
+            "namespace": {
+              "mode": "uri",
+              "prefix": "unitsml",
+              "uri": "https://schema.unitsml.org/unitsml/1.0"
+            },
+            "root": {
+              "element": "Conversions"
+            },
+            "rules": [
+              {
+                "kind": "element",
+                "name": [
+                  "Float64ConversionFrom"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "float64_conversion_from"
+              },
+              {
+                "kind": "element",
+                "name": [
+                  "SpecialConversionFrom"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "special_conversion_from"
+              },
+              {
+                "kind": "element",
+                "name": [
+                  "WSDLConversionFrom"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "wsdl_conversion_from"
+              }
+            ]
+          }
+        },
+        "model": "Unitsml::Model::Units::Conversions",
+        "register": "default"
+      },
+      "Unitsml::Model::Units::Float64ConversionFrom@default": {
+        "attributes": [
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "id",
+            "required": false,
+            "type": {
+              "id": "xml:id",
+              "kind": "value"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "initial_unit",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "initial_addend",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "initial_addend_decimal_place",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "integer"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "multiplicand",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "multiplicand_digits",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "integer"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "divisor",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "divisor_digits",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "integer"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "final_addend",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "final_addend_decimal_place",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "integer"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "exact",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "boolean"
+            }
+          },
+          {
+            "collection": {
+              "max": null,
+              "min": 0
+            },
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "conversion_note",
+            "required": false,
+            "type": {
+              "id": "Unitsml::Model::Units::ConversionNote@default",
+              "kind": "model"
+            }
+          }
+        ],
+        "lml": 2,
+        "mappings": {
+          "xml": {
+            "namespace": {
+              "mode": "uri",
+              "prefix": "unitsml",
+              "uri": "https://schema.unitsml.org/unitsml/1.0"
+            },
+            "root": {
+              "element": "Float64ConversionFrom"
+            },
+            "rules": [
+              {
+                "kind": "element",
+                "name": [
+                  "ConversionNote"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "conversion_note"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "id"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "id"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "initialUnit"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "initial_unit"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "initialAddend"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "initial_addend"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "initialAddendDecimalPlace"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "initial_addend_decimal_place"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "multiplicand"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "multiplicand"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "multiplicandDigits"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "multiplicand_digits"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "divisor"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "divisor"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "divisorDigits"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "divisor_digits"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "finalAddend"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "final_addend"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "finalAddendDecimalPlace"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "final_addend_decimal_place"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "exact"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "exact"
+              }
+            ]
+          }
+        },
+        "model": "Unitsml::Model::Units::Float64ConversionFrom",
+        "register": "default"
+      },
+      "Unitsml::Model::Units::SpecialConversionFrom@default": {
+        "attributes": [
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "id",
+            "required": false,
+            "type": {
+              "id": "xml:id",
+              "kind": "value"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "initial_unit",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "conversion_url",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": {
+              "max": null,
+              "min": 0
+            },
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "conversion_description",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          }
+        ],
+        "lml": 2,
+        "mappings": {
+          "xml": {
+            "namespace": {
+              "mode": "uri",
+              "prefix": "unitsml",
+              "uri": "https://schema.unitsml.org/unitsml/1.0"
+            },
+            "root": {
+              "element": "SpecialConversionFrom"
+            },
+            "rules": [
+              {
+                "kind": "element",
+                "name": [
+                  "ConversionDescription"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "conversion_description"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "id"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "id"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "initialUnit"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "initial_unit"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "conversionURL"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "conversion_url"
+              }
+            ]
+          }
+        },
+        "model": "Unitsml::Model::Units::SpecialConversionFrom",
+        "register": "default"
+      },
+      "Unitsml::Model::Units::WsdlConversionFrom@default": {
+        "attributes": [
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "id",
+            "required": false,
+            "type": {
+              "id": "xml:id",
+              "kind": "value"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "initial_unit",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": false,
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "wsdl_url",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          },
+          {
+            "collection": {
+              "max": null,
+              "min": 0
+            },
+            "default": {
+              "present": false
+            },
+            "initialize_empty": false,
+            "name": "wsdl_description",
+            "required": false,
+            "type": {
+              "kind": "builtin",
+              "name": "string"
+            }
+          }
+        ],
+        "lml": 2,
+        "mappings": {
+          "xml": {
+            "namespace": {
+              "mode": "uri",
+              "prefix": "unitsml",
+              "uri": "https://schema.unitsml.org/unitsml/1.0"
+            },
+            "root": {
+              "element": "WSDLConversionFrom"
+            },
+            "rules": [
+              {
+                "kind": "element",
+                "name": [
+                  "WSDLDescription"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "wsdl_description"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "id"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "id"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "initialUnit"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "initial_unit"
+              },
+              {
+                "kind": "attribute",
+                "name": [
+                  "wsdlURL"
+                ],
+                "namespace": {
+                  "mode": "inherit"
+                },
+                "render": {
+                  "default": false,
+                  "empty": "omit",
+                  "nil": "omit"
+                },
+                "to": "wsdl_url"
+              }
+            ]
+          }
+        },
+        "model": "Unitsml::Model::Units::WsdlConversionFrom",
+        "register": "default"
+      }
+    },
+    "roots": [
+      "Unitsml::Model::Units::Conversions@default"
+    ],
+    "value_types": {
+      "xml:id": {
+        "base": "string",
+        "facets": {}
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "frozen-degc-to-k-definition",
+      "model_id": "Unitsml::Model::Units::Float64ConversionFrom@default",
+      "source": "testsuite corpora/conversions/expected-conversions.json case degc-to-k-definition",
+      "input_xml": "<Float64ConversionFrom xml:id=\"K_from_degC\" initialUnit=\"#NISTu23\" finalAddend=\"273.15\" exact=\"true\"/>",
+      "portable_json": {
+        "id": "K_from_degC",
+        "initial_unit": "#NISTu23",
+        "final_addend": "273.15",
+        "exact": true
+      },
+      "ruby_xml": "<Float64ConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"K_from_degC\" initialUnit=\"#NISTu23\" finalAddend=\"273.15\" exact=\"true\"/>"
+    },
+    {
+      "id": "frozen-degc-to-degf-definition",
+      "model_id": "Unitsml::Model::Units::Float64ConversionFrom@default",
+      "source": "testsuite corpora/conversions/expected-conversions.json case degc-to-degf-definition",
+      "input_xml": "<Float64ConversionFrom xml:id=\"degF_from_K\" initialUnit=\"#NISTu5\" initialAddend=\"-273.15\" multiplicand=\"9\" divisor=\"5\" finalAddend=\"32\" exact=\"true\"/>",
+      "portable_json": {
+        "id": "degF_from_K",
+        "initial_unit": "#NISTu5",
+        "initial_addend": "-273.15",
+        "multiplicand": "9",
+        "divisor": "5",
+        "final_addend": "32",
+        "exact": true
+      },
+      "ruby_xml": "<Float64ConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"degF_from_K\" initialUnit=\"#NISTu5\" initialAddend=\"-273.15\" multiplicand=\"9\" divisor=\"5\" finalAddend=\"32\" exact=\"true\"/>"
+    },
+    {
+      "id": "frozen-err-definition-disagrees-with-canonical",
+      "model_id": "Unitsml::Model::Units::Float64ConversionFrom@default",
+      "source": "testsuite corpora/conversions/expected-conversions.json case err-definition-disagrees-with-canonical",
+      "input_xml": "<Float64ConversionFrom xml:id=\"bad_degC\" initialUnit=\"#NISTu5\" finalAddend=\"-273.16\" exact=\"true\"/>",
+      "portable_json": {
+        "id": "bad_degC",
+        "initial_unit": "#NISTu5",
+        "final_addend": "-273.16",
+        "exact": true
+      },
+      "ruby_xml": "<Float64ConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"bad_degC\" initialUnit=\"#NISTu5\" finalAddend=\"-273.16\" exact=\"true\"/>"
+    },
+    {
+      "id": "constructed-float64-long-lexical",
+      "model_id": "Unitsml::Model::Units::Float64ConversionFrom@default",
+      "source": "constructed; synthetic sample values",
+      "portable_json": {
+        "id": "NISTc_long",
+        "initial_unit": "#NISTu5",
+        "initial_addend": "-273.150000000000000000000000000000000000000000000000000000000001",
+        "initial_addend_decimal_place": "62",
+        "multiplicand": "9",
+        "multiplicand_digits": "1",
+        "divisor": "5",
+        "divisor_digits": "1",
+        "final_addend": "273.150000000000000000000000000000000000000000000000000000000001",
+        "final_addend_decimal_place": "62",
+        "exact": false,
+        "conversion_note": [
+          {
+            "content": "first"
+          },
+          {
+            "content": "second"
+          }
+        ]
+      },
+      "ruby_xml": "<Float64ConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"NISTc_long\" initialUnit=\"#NISTu5\" initialAddend=\"-273.150000000000000000000000000000000000000000000000000000000001\" initialAddendDecimalPlace=\"62\" multiplicand=\"9\" multiplicandDigits=\"1\" divisor=\"5\" divisorDigits=\"1\" finalAddend=\"273.150000000000000000000000000000000000000000000000000000000001\" finalAddendDecimalPlace=\"62\" exact=\"false\">\n  <ConversionNote>first</ConversionNote>\n  <ConversionNote>second</ConversionNote>\n</Float64ConversionFrom>"
+    },
+    {
+      "id": "constructed-conversions-container",
+      "model_id": "Unitsml::Model::Units::Conversions@default",
+      "source": "constructed; synthetic sample values",
+      "portable_json": {
+        "float64_conversion_from": {
+          "id": "NISTc_long",
+          "initial_unit": "#NISTu5",
+          "initial_addend": "-273.150000000000000000000000000000000000000000000000000000000001",
+          "initial_addend_decimal_place": "62",
+          "multiplicand": "9",
+          "multiplicand_digits": "1",
+          "divisor": "5",
+          "divisor_digits": "1",
+          "final_addend": "273.150000000000000000000000000000000000000000000000000000000001",
+          "final_addend_decimal_place": "62",
+          "exact": false,
+          "conversion_note": [
+            {
+              "content": "first"
+            },
+            {
+              "content": "second"
+            }
+          ]
+        },
+        "special_conversion_from": {
+          "id": "NISTc_special",
+          "initial_unit": "#NISTu7",
+          "conversion_url": "https://example.org/special"
+        },
+        "wsdl_conversion_from": {
+          "id": "NISTc_wsdl",
+          "initial_unit": "#NISTu8",
+          "wsdl_url": "https://example.org/w.wsdl"
+        }
+      },
+      "ruby_xml": "<Conversions xmlns=\"https://schema.unitsml.org/unitsml/1.0\">\n  <Float64ConversionFrom xml:id=\"NISTc_long\" initialUnit=\"#NISTu5\" initialAddend=\"-273.150000000000000000000000000000000000000000000000000000000001\" initialAddendDecimalPlace=\"62\" multiplicand=\"9\" multiplicandDigits=\"1\" divisor=\"5\" divisorDigits=\"1\" finalAddend=\"273.150000000000000000000000000000000000000000000000000000000001\" finalAddendDecimalPlace=\"62\" exact=\"false\">\n    <ConversionNote>first</ConversionNote>\n    <ConversionNote>second</ConversionNote>\n  </Float64ConversionFrom>\n  <SpecialConversionFrom xml:id=\"NISTc_special\" initialUnit=\"#NISTu7\" conversionURL=\"https://example.org/special\"/>\n  <WSDLConversionFrom xml:id=\"NISTc_wsdl\" initialUnit=\"#NISTu8\" wsdlURL=\"https://example.org/w.wsdl\"/>\n</Conversions>"
+    },
+    {
+      "id": "constructed-special-description",
+      "known_gap": "Ruby writes ConversionDescription/WSDLDescription with xmlns=\"\" (unqualified); the exported IR rule says namespace inherit",
+      "model_id": "Unitsml::Model::Units::SpecialConversionFrom@default",
+      "source": "constructed; synthetic sample values",
+      "portable_json": {
+        "id": "NISTc_special_d",
+        "initial_unit": "#NISTu7",
+        "conversion_url": "https://example.org/special",
+        "conversion_description": [
+          "alpha",
+          "beta"
+        ]
+      },
+      "ruby_xml": "<SpecialConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"NISTc_special_d\" initialUnit=\"#NISTu7\" conversionURL=\"https://example.org/special\">\n  <ConversionDescription xmlns=\"\">alpha</ConversionDescription>\n  <ConversionDescription xmlns=\"\">beta</ConversionDescription>\n</SpecialConversionFrom>"
+    },
+    {
+      "id": "constructed-wsdl-description",
+      "known_gap": "Ruby writes ConversionDescription/WSDLDescription with xmlns=\"\" (unqualified); the exported IR rule says namespace inherit",
+      "model_id": "Unitsml::Model::Units::WsdlConversionFrom@default",
+      "source": "constructed; synthetic sample values",
+      "portable_json": {
+        "id": "NISTc_wsdl_d",
+        "initial_unit": "#NISTu8",
+        "wsdl_url": "https://example.org/w.wsdl",
+        "wsdl_description": [
+          "gamma"
+        ]
+      },
+      "ruby_xml": "<WSDLConversionFrom xmlns=\"https://schema.unitsml.org/unitsml/1.0\" xml:id=\"NISTc_wsdl_d\" initialUnit=\"#NISTu8\" wsdlURL=\"https://example.org/w.wsdl\">\n  <WSDLDescription xmlns=\"\">gamma</WSDLDescription>\n</WSDLConversionFrom>"
+    }
+  ]
+}
