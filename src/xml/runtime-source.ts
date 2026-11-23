@@ -318,6 +318,8 @@ function elementChildren(el: El): El[] {
 
 function findAttribute(el: El, rule: AttrRule): string | null {
   for (const a of attributesOf(el)) {
+    // Ruby matches the literal qualified name: a rule named "xml:lang" is the prefixed attribute, whatever its URI.
+    if (a.prefix !== "" && rule.names.includes(a.prefix + ":" + a.localName)) return a.value;
     if (rule.names.includes(a.localName) && accepts(rule.ns, a.namespaceUri)) return a.value;
   }
   return null;

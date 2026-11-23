@@ -102,6 +102,14 @@ These are historical row counts, not a current pass-rate claim. Compare suite/ve
 The later snapshot listed these remaining mismatch classes: attribute-value whitespace (TS follows the XML spec, libxml2 keeps literal LF/TAB), undefined entity references (input not well-formed), whitespace-only text and empty-text tokens in a few element-only cases. Both sides refuse comments/PIs in ordered content.
 First run (before T4/T6), for comparison: mml2 as-is 0/712, mml3 1638/1675, mmlcore as-is 44/2083; 185 mismatches were catch-all attributes, reported as 0 in the later snapshot.
 
+## Pinned run at the delivered head (installed-gem Ruby, not Bundler-resolved)
+
+Corpora: plurimath mml2-testsuite c87d85ee, mml3-testsuite e8d57c5, mmlcore-testsuite 4e00baa9 (shallow clones). Ruby 3.4.8 with
+`LML_RUBY_DIRECT=1` (installed gems, mml 2.4.7, moxml 0.6.16; Bundler dependencies were incomplete, so this is not
+Bundler-resolved parity). 4470 files, 7217 case executions; pass 6810 (mml2 as-is 690, ns-injected 690, mml3 1645,
+mmlcore as-is 1915, ns-injected 1870), unchanged except mml3 (1644 to 1645) after the `xml:lang` fix. Bytes equal: 0 (tree and data
+equality are separate counters in report.json). The 4250/4470 and 5717/6217 historical figures above are superseded by this run.
+
 ## Historical refusal classifications
 
 These counts are from earlier snapshots, including the pre-T4 namespace

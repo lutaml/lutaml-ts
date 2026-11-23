@@ -61,7 +61,11 @@ function runRuby(version, files, tag) {
   if (!(reuse && existsSync(jsonl))) {
     const list = join(outDir, `files-${tag}.txt`);
     writeFileSync(list, files.join("\n") + "\n");
-    const r = spawnSync("bundle", ["exec", "ruby", "-Ilib", join(REPO, "scripts/mml/ruby_oracle.rb"), version, list, jsonl], {
+    // LML_RUBY_DIRECT=1 skips Bundler and uses the installed gems of the active Ruby
+    // (GEM_HOME); the report is then not Bundler-resolved parity.
+    const rubyArgs = ["-Ilib", join(REPO, "scripts/mml/ruby_oracle.rb"), version, list, jsonl];
+    const [cmd, args] = process.env.LML_RUBY_DIRECT === "1" ? ["ruby", rubyArgs] : ["bundle", ["exec", "ruby", ...rubyArgs]];
+    const r = spawnSync(cmd, args, {
       cwd: wave1, env: { ...process.env, LML_MML_ROOT: mmlRoot }, encoding: "utf8", maxBuffer: 1 << 28,
     });
     if (r.status !== 0) throw new Error(`ruby oracle failed (v${version} ${tag}):\n${r.stderr}`);
