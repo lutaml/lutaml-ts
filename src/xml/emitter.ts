@@ -317,7 +317,7 @@ function emitModel(ctx: Context, id: ModelId, doc: ModelDocument, cls: string, m
       contentSeen = true;
       if (!hookOnly) scalarOf(ctx, spec, refuse);
       if (readHooked) readHooks.push(`    { kind: "content", names: [], ns: ${acceptList([null])}, to: ${hookTo}, collection: ${collection}, from: ${hookFrom} },`);
-      else readContent = `{ to: ${q(rule.to)}, collection: ${collection} }`;
+      else readContent = `{ to: ${q(rule.to)}, collection: ${collection}${rule.cdata === true ? ", cdata: true" : ""} }`;
       if (writeHooked) writeHooks.push(`    { kind: "content", rule: "content", name: ${hookName} },`);
       else writeContent = `{ to: ${q(rule.to)}, collection: ${collection}, cdata: ${rule.cdata === true}${skipsApplied(rule, attr?.default?.present === true)} }`;
       if (rule.cdata === true && !writeHooked) writerRefusals.push(`content rule ${rule.to} is cdata`);

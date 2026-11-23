@@ -289,6 +289,8 @@ export interface ElemRule {
 export interface ContentRule {
   readonly to: string;
   readonly collection: boolean;
+  /** cdata: true on the rule (Ruby reads only the CDATA sections, and keeps scattered ones as a list). */
+  readonly cdata?: boolean;
 }
 
 export interface ModelSpec {
@@ -478,6 +480,7 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       const list = spec.mixed || spec.ordered ? texts : all.filter((k) => k.kind === KIND_TEXT).map((k) => k.node.text() ?? "");
       if (list.length > 0) setOwn(init, content.to, list);
     } else {
+      refuseScatteredScalar(spec, el, all, children, content);
       setOwn(init, content.to, textOf(el, true));
     }
   }
@@ -552,6 +555,25 @@ function runReadHooks(
     }
     if (hook.to !== null && supplied.length > 0) setOwn(init, hook.to, hook.collection ? supplied : supplied[0]);
   }
+}
+
+/**
+ * Ruby joins the text of a single-valued content attribute only around UNMAPPED child elements; around a declared
+ * child (or, for a cdata: true rule, around any other node) its pieces stay a list, which a single-valued attribute
+ * cannot hold and which Ruby's own validation flags. That state is not representable, so it is refused by name rather
+ * than flattened. Unknown children are joined as before.
+ */
+function refuseScatteredScalar(spec: ModelSpec, el: El, all: readonly Kid[], children: readonly El[], content: ContentRule): void {
+  if (all.length < 2) return;
+  const pieces = all.filter((k) => k.kind === KIND_TEXT || k.kind === KIND_CDATA);
+  if (content.cdata === true) {
+    if (!all.some((k) => k.kind === KIND_CDATA)) return;
+    throw new XmlError("invalid_document", "single-valued cdata content spread over " + all.length + " child nodes; Ruby keeps the sections as a list", el.loc).context(spec.id, content.to, "content");
+  }
+  if (pieces.length === 0) return;
+  const mapped = children.find((c) => spec.elems.some((r) => matchesElem(r, c)) || (spec.hooks ?? []).some((h) => h.kind === "element" && matchesElem(h, c)));
+  if (mapped === undefined) return;
+  throw new XmlError("invalid_document", "single-valued text content is split around the declared child " + localOf(mapped) + "; Ruby keeps the pieces as a list and flags it invalid", el.loc).context(spec.id, content.to, "content");
 }
 
 function lacksText(all: readonly Kid[], children: readonly El[], spec: ModelSpec): boolean {
