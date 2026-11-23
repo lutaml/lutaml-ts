@@ -639,22 +639,22 @@ describe.skipIf(!available)("single-child text and whitespace-only literal token
   });
 
   // Valid XML keeps a whitespace character written as a character reference in an attribute value (&#10; stays LF);
-  // only literal whitespace is normalized. The pinned moxml-ts serializer drops TAB and LF from attribute values
-  // (probe: parse '<a b="x&#10;y&#9;z&#13;w"/>' then toXml gives b="xyz&#13;w"), where Ruby writes &#9; &#10; &#13;.
-  // Writing must not silently change data, so it refuses by name; CR is written intact. Cases: mmlcore
-  // relations/css-styling/{border,margin,padding}-001.*.mml (style="...;&#10; ...") and lengths-2.math1.mml.
-  it("reads TAB/LF character references in attribute values and refuses to write them rather than drop them", { timeout: 180_000 }, async () => {
+  // only literal whitespace is normalized. The moxml-ts pin a78091f (leptris-wasm 1.6.5) dropped TAB and LF when
+  // serializing, so the writer refused them; the pin at 77d01eb (leptris-wasm 1.9.0) writes &#9; &#10; &#13; as Ruby does.
+  // Cases: mmlcore relations/css-styling/{border,margin,padding}-001.*.mml (style="...;&#10; ...") and lengths-2.math1.mml.
+  it("round-trips TAB, LF and CR in attribute values with quotes, ampersands and Unicode", { timeout: 180_000 }, async () => {
     const att = await codec("Att@default");
+    const bare = (x: string) => x.replace(/ xmlns(:\w+)?="[^"]*"/g, "");
     const read = async (xml: string) => dump(await att.parse(xml)) as { x: string; y: string };
     const value = await read('<a x="p&#10;q&#9;r&#13;s" y="lit\neral\ttab"/>');
     expect(value.x).toBe("p\nq\tr\rs"); // character references are kept by the parser
     expect(value.y).toBe("lit eral tab"); // literal whitespace is normalized to spaces
-    const failure = await infoOf(async () => att.stringify(await att.parse('<a x="p&#10;q"/>')));
-    expect(failure).toMatchObject({ reason: "not_serializable", model_id: "Att@default", attribute: "x" });
-    expect((await infoOf(async () => att.stringify(await att.parse('<a y="p&#9;q"/>'))))?.reason).toBe("not_serializable");
-    // preserved: CR and ordinary values are written and re-read intact; text content keeps its raw LF
-    const xml = (await att.stringify(await att.parse('<a x="p&#13;s" y="a&gt;b&quot;c"><t>a\nb</t></a>'))).replace(/ xmlns(:\w+)?="[^"]*"/g, "");
-    expect(xml).toBe('<a x="p&#13;s" y="a&gt;b&quot;c"><t>a\nb</t></a>');
+    const input = '<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>';
+    const out = bare(await att.stringify(await att.parse(input)));
+    expect(out).toBe('<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>'); // text keeps its raw LF
+    expect(await read(out)).toMatchObject({ x: "p\nq\tr\rs", y: '"a" & <b> é😀\n' });
+    // preserved: ordinary attributes are written unchanged
+    expect(bare(await att.stringify(await att.parse('<a x="plain" y="a b"/>')))).toBe('<a x="plain" y="a b"/>');
   });
 
   // Ruby (ordered_applier / instance_methods): a whitespace-only literal text token is skipped unless the model maps

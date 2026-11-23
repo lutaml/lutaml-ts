@@ -801,17 +801,6 @@ export interface WSpec {
   readonly refusal: string | null;
 }
 
-/**
- * The pinned moxml-ts serializer drops TAB and LF from attribute values (a parsed &#10; or &#9; is kept in the model but
- * written as nothing), which would silently change the data. Refuse by name instead; CR is written as &#13; and is fine.
- */
-function attributeText(spec: WSpec, to: string, name: string, text: string): string {
-  if (/[\t\n]/.test(text)) {
-    throw new XmlError("not_serializable", "attribute " + name + " holds a TAB or LF that the moxml-ts serializer would drop").context(spec.id, to, name);
-  }
-  return text;
-}
-
 function qname(name: string, ns: NsOut | null): string {
   return ns?.prefix ? ns.prefix + ":" + name : name;
 }
@@ -876,7 +865,7 @@ export function writeModel<T extends object>(
       if (raw === null && rule.nil === "as_blank") host.setAttributeNS(rule.ns?.uri ?? "", qname(rule.name, rule.ns), "");
       continue;
     }
-    const text = attributeText(spec, rule.to, rule.name, (rule.enc as (v: unknown) => string)(raw));
+    const text = (rule.enc as (v: unknown) => string)(raw);
     if (text === "" && rule.empty === "omit") continue;
     if (rule.ns === null) host.setAttribute(rule.name, text);
     else host.setAttributeNS(rule.ns.uri, qname(rule.name, rule.ns), text);
@@ -886,7 +875,7 @@ export function writeModel<T extends object>(
     if (typeof bag === "object" && bag !== null && !Array.isArray(bag)) {
       for (const [k, v] of Object.entries(bag)) {
         if (v === null || v === undefined) continue;
-        host.setAttribute(k, attributeText(spec, spec.any, k, anyAttributeText(spec, spec.any, k, v)));
+        host.setAttribute(k, anyAttributeText(spec, spec.any, k, v));
       }
     }
   }

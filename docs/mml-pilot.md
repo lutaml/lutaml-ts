@@ -119,7 +119,7 @@ the final full run supersedes these counts. Per-case rows are in the F2 evidence
 |---|---|---|---|
 | empty text token, lone child element (`<mi><span/></mi>`, `<ms><mfrac/></ms>`) | 23 | Ruby `XmlElement#text` joins text nodes into one string for at most one child node | fixed |
 | whitespace-only literal text in mixed models without a content rule (`<set> </set>`) | 22 | Ruby skips whitespace-only literal tokens when writing | fixed |
-| TAB/LF in attribute values (`&#10;` in `style`, `width`) | 40 rows (38 + 2 below) | valid XML; the pinned moxml-ts serializer drops TAB/LF from attribute values | now refused by name (`not_serializable`), no longer silent data loss |
+| TAB/LF in attribute values (`&#10;` in `style`, `width`) | 38 | valid XML; the old moxml-ts pin dropped TAB/LF when serializing | fixed by the moxml-ts 77d01eb pin (leptris-wasm 1.9.0): cached re-comparison of these 38 rows passes |
 | single-valued text content over several child nodes (mrow-like-002 `annotation`) | 2 | no comment in the input; Ruby holds a list in a string attribute | refused by name (`invalid_document`) |
 | `&amp;name;` text (valid XML) | 28 | data equal; Ruby writes `&name;` unescaped, so its own output is not well-formed and is recovered differently when compared | unfixable in TS without writing malformed XML; stays a mismatch |
 | bare `&name;` without a DTD, several roots, non-MathML root, repeated singleton `mprescripts` | 31 | invalid XML or contract refusal | refused by name by TS; Ruby recovers |
