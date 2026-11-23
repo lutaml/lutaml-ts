@@ -93,8 +93,33 @@ class Context {
 
   mapping(id: ModelId): KeyValueMapping | undefined {
     const doc = Object.hasOwn(this.bundle.models, id) ? this.bundle.models[id] : undefined;
-    // A model without `mappings` has no mappings.
-    return (doc?.mappings as Partial<Record<string, KeyValueMapping>> | undefined)?.[this.format];
+    const mappings = doc?.mappings as Partial<Record<string, KeyValueMapping>> | undefined;
+    const declared = mappings?.[this.format];
+    if (declared !== undefined || doc === undefined) return declared;
+    // A model whose `mappings` object is present but empty has no explicit mapping block at all: like
+    // Ruby, every attribute maps under its own name. Only when another model holds it as a member or a
+    // discriminator case (a codec is then needed); an unreferenced or other-format-only model stays unmapped.
+    if (mappings !== undefined && Object.keys(mappings).length === 0 && this.referenced().has(id)) {
+      return { rules: doc.attributes.map((a): KeyValueRule => ({ key: [a.name], to: a.name })) };
+    }
+    return undefined;
+  }
+
+  private referencedIds: Set<ModelId> | undefined;
+
+  /** Models some attribute type or discriminator case points at. */
+  private referenced(): ReadonlySet<ModelId> {
+    if (this.referencedIds !== undefined) return this.referencedIds;
+    const ids = new Set<ModelId>();
+    for (const doc of Object.values(this.bundle.models)) {
+      for (const attr of doc.attributes) {
+        if (attr.type.kind === "model") ids.add(attr.type.id);
+        for (const target of Object.values(attr.discriminator?.cases ?? {})) ids.add(target);
+      }
+      const rules = (doc.mappings as Partial<Record<string, KeyValueMapping>>)[this.format]?.rules ?? [];
+      for (const rule of rules) for (const target of Object.values(rule.discriminator?.cases ?? {})) ids.add(target);
+    }
+    return (this.referencedIds = ids);
   }
 
   bind(binding: TypeBinding): BoundUse {

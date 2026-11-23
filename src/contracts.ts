@@ -97,6 +97,8 @@ export interface KeyValueRule {
   readonly to?: string;
   readonly custom?: CustomSerialization;
   readonly render?: RenderPolicy;
+  /** Rule-level polymorphism (finite cases), the same shape as an attribute's. */
+  readonly discriminator?: Discriminator;
 }
 
 export interface XmlMapping {

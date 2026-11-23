@@ -326,8 +326,18 @@ describe("named refusals", () => {
   it("several rules on one attribute", () => refused(withRule((r) => { r.push({ key: ["extra"], to: "qty" }); }), /several rules/));
   it("duplicate wire keys", () => refused(withRule((r) => { (r[1] as any).key = ["order_id"]; }), /duplicate wire key/));
   it("render policy outside omit/as_nil/as_empty", () => refused(withRule((r) => { (r[0] as any).render = { nil: "sometimes" }; }), /policy/));
-  it("a referenced model without a json mapping", () =>
-    refused(mutated((d) => { delete d.models["Codec::Line@default"]?.mappings.json; }), /no json mapping/));
+  it("a referenced model that maps other formats only has no json mapping", () =>
+    refused(mutated((d) => {
+      const line = d.models["Codec::Line@default"] as NonNullable<(typeof d.models)[string]>;
+      (line.mappings as Record<string, unknown>)["yaml"] = (line.mappings as Record<string, unknown>)["json"];
+      delete (line.mappings as Record<string, unknown>)["json"];
+    }), /no json mapping/));
+  it("a referenced model with an empty mappings object gets the implicit mapping (every attribute under its own name), like Ruby", () => {
+    const out = generateJsonCodecs(mutated((d) => { (d.models["Codec::Line@default"] as { mappings: object }).mappings = {}; }), EXACT_BINDINGS);
+    const text = out.get("json/codecs.ts") as string;
+    expect(text).toContain("export function decodeCodecLine");
+    expect(text).toContain('w.field(o, ["sku"], init, "sku"');
+  });
   it("a discriminator whose base model has no rule for the discriminator attribute", () =>
     refused(
       mutated((d) => {
