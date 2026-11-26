@@ -33,6 +33,7 @@ const KIND_ELEMENT = 1;
 const KIND_TEXT = 2;
 const KIND_COMMENT = 3;
 const KIND_CDATA = 4;
+const KIND_PI = 5;
 const XSI = "http://www.w3.org/2001/XMLSchema-instance";
 const MAX_INPUT = 16 * 1024 * 1024;
 
@@ -222,7 +223,7 @@ function kids(el: El): Kid[] {
   return made;
 }
 
-/** The string value of a CDATA or comment node (moxml-ts text() is empty for both). */
+/** The string value of a CDATA, comment or processing-instruction node, read through XPath string(). */
 function cdataText(el: El, kid: Kid): string {
   return (kid.text ??= el.doc.xpath("string(" + kid.xp + ")"));
 }
@@ -490,9 +491,10 @@ export function readModel<T>(el: El, spec: ModelSpec, cls: new (init: never) => 
       }
     } else if (kid.kind === KIND_COMMENT) {
       if (spec.tokens) tokens.push({ kind: "comment", literal: cdataText(el, kid) });
+    } else if (kid.kind === KIND_PI) {
+      if (spec.tokens) tokens.push({ kind: "processing_instruction", target: kid.node.piTarget() ?? "", data: cdataText(el, kid) });
     } else if (spec.tokens) {
-      // moxml-ts at the pinned revision exposes no processing-instruction target.
-      xmlFail("processing instructions need a target that moxml-ts does not expose", el.loc, "invalid_ordered_content");
+      xmlFail("unexpected node kind " + kid.kind + " in ordered content", el.loc, "invalid_ordered_content");
     }
   }
   if (spec.tokens) {
@@ -1090,6 +1092,17 @@ function appendText(w: Writer, host: Node, text: string): void {
   host.addChild(w.doc.createText(text));
 }
 
+/** Writes a comment or processing-instruction token; text the XML grammar cannot carry is refused. */
+function appendMarkup(spec: WSpec, host: Node, make: () => Node): void {
+  let node: Node;
+  try {
+    node = make();
+  } catch (e) {
+    throw new XmlError("not_serializable", (e as Error).message, "").context(spec.id);
+  }
+  host.addChild(node);
+}
+
 function nilMark(host: Node): void {
   host.setAttributeNS(XSI, "xsi:nil", "true");
 }
@@ -1270,8 +1283,14 @@ export async function writeModel<T extends object>(
   if (spec.ordered && order !== null) {
     for (const token of order) {
       if (token.kind === "attribute") continue;
-      if (token.kind === "comment" || token.kind === "processing_instruction") {
-        throw new XmlError("unsupported_mapping", "comment and processing-instruction output needs node constructors that moxml-ts does not provide").context(spec.id);
+      if (token.kind === "processing_instruction") {
+        appendMarkup(spec, host, () => w.doc.createProcessingInstruction(token.target, token.data));
+        continue;
+      }
+      if (token.kind === "comment" && "literal" in token) {
+        const literal = token.literal;
+        appendMarkup(spec, host, () => w.doc.createComment(literal));
+        continue;
       }
       if ("literal" in token) {
         if (token.kind === "cdata") {

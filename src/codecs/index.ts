@@ -38,7 +38,7 @@ const EXACT_BUILTINS = new Set(["decimal", "rational"]);
 const KNOWN_RULE_KEYS = new Set(["key", "to", "render", "discriminator", "custom"]);
 
 /** Wire shape an empty value is recognised by. */
-type Shape = "scalar" | "text" | "hash" | "list";
+type Shape = "scalar" | "text" | "hash" | "model" | "list";
 
 interface Wire {
   /** Expression of `(v: unknown) => T` for one element. */
@@ -225,7 +225,7 @@ function elementWire(ctx: Context, attr: AttributeSpec, disc: Discriminator | un
   if (ctx.mapping(type.id) === undefined) {
     return refuse.unsupported(`referenced model ${type.id} has no ${ctx.format} mapping`, attr.name);
   }
-  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "hash" };
+  return { dec: `decode${cls}`, enc: `encode${cls}`, shape: "model" };
 }
 
 function attributeWire(ctx: Context, doc: ModelDocument, id: ModelId, attr: AttributeSpec, refuse: Refusal): Wire {

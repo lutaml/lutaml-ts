@@ -630,15 +630,27 @@ describe.skipIf(!available)("comments, processing instructions and attribute ord
     expect(() => new Mk({ x: "1", __lml_content: [{ kind: "attribute", attribute: "x", index: 1 }] })).toThrow();
   });
 
-  it("reads a comment as a token; writing it and reading a processing instruction are refused under the pinned moxml-ts", { timeout: 180_000 }, async () => {
+  it("reads and writes comments and processing instructions as tokens, in input order", { timeout: 180_000 }, async () => {
     const codec = (await ready()).CODECS["Mk@default"];
-    const value = await codec.parse("<m><!--note--><c>t</c></m>");
-    expect(dump(value)).toEqual({ c: "t", x: null, y: null, __lml_content: [{ kind: "comment", literal: "note" }, element] });
-    const out = await infoOf(() => codec.stringify(value));
-    expect(out?.reason).toBe("unsupported_mapping");
-    expect(out?.detail).toMatch(/comment/);
-    const pi = await infoOf(() => codec.parse("<m><?pi data?><c>t</c></m>"));
-    expect(pi?.reason).toBe("invalid_ordered_content");
+    const value = await codec.parse("<m><!--note--><c>t</c><?pi some data?></m>");
+    expect(dump(value)).toEqual({
+      c: "t", x: null, y: null,
+      __lml_content: [{ kind: "comment", literal: "note" }, element, { kind: "processing_instruction", target: "pi", data: "some data" }],
+    });
+    expect(await codec.stringify(value)).toBe("<m><!--note--><c>t</c><?pi some data?></m>");
+  });
+
+  it("refuses a comment or processing-instruction token the XML grammar cannot carry", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const Mk = (await codec.parse("<m/>")).constructor as new (init: object) => object;
+    for (const token of [
+      { kind: "comment", literal: "a--b" },
+      { kind: "processing_instruction", target: "xml", data: "" },
+      { kind: "processing_instruction", target: "p", data: "a?>b" },
+    ]) {
+      const out = await infoOf(() => codec.stringify(new Mk({ c: null, x: null, y: null, __lml_content: [token] })));
+      expect(out?.reason).toBe("not_serializable");
+    }
   });
 });
 
