@@ -270,7 +270,13 @@ function flatSequenceRules(mapping: XmlMapping, groups: unknown, ordered: boolea
     return undefined;
   }
   const imported = members.filter((rule) => !byMember.has(rule.to));
-  return { rules: [...mapping.rules, ...imported], canWrite: ordered };
+  // Without ordered content the writer emits declared element rules, then the
+  // sequence-only members. That is the sequence order when every declared
+  // element is a member and the sequence lists them first, in the same order.
+  const writeOrder = [...elements.map((rule) => rule.to), ...imported.map((rule) => rule.to)];
+  const inSequenceOrder = writeOrder.length === members.length &&
+    writeOrder.every((to, index) => members[index]?.to === to);
+  return { rules: [...mapping.rules, ...imported], canWrite: ordered || inSequenceOrder };
 }
 
 function omittedSequenceRules(rules: readonly XmlRule[], groups: unknown): boolean {
