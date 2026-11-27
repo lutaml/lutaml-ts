@@ -908,7 +908,7 @@ describe.skipIf(!available)("unordered XML sequence with standalone rules", () =
   const source = bundle.models[id]!;
   const xml = source.mappings.xml!;
   const codecWith = async (keep: (to: string) => boolean) => {
-    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.kind !== "element" || keep(rule.to)) };
+    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.kind !== "element" || keep(rule.to ?? "")) };
     const changed = { ...bundle, models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } } };
     return (await load(generateInto(changed)))["xml"].CODECS[id];
   };
