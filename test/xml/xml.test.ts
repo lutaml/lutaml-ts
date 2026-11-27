@@ -1,0 +1,932 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+import { LmlError } from "../../src/contracts.js";
+import type { Bindings, Bundle, ErrorCode } from "../../src/contracts.js";
+import { generateModelsWith } from "../../src/generator/index.js";
+import { createXmlEmitter, xmlEmitter } from "../../src/xml/index.js";
+import { canonicalTree, stable, stripWs } from "../../scripts/mml/lib.mjs";
+
+// moxml-ts is a git dependency whose install fetches wasm (see package.json).
+// Where it is absent (an install without the dependency) the runtime cases are
+// reported as skipped, never as passed; emitter-only cases still run.
+const probe = spawnSync(process.execPath, ["--input-type=module", "-e", 'await import("moxml-ts")'], { encoding: "utf8" });
+const available = probe.status === 0;
+
+const REPO = resolve(import.meta.dirname, "../..");
+const FIXTURES = join(import.meta.dirname, "fixtures");
+const created: string[] = [];
+afterAll(() => {
+  for (const dir of created) rmSync(dir, { recursive: true, force: true });
+});
+
+interface OracleCase {
+  id: string;
+  model_id: string;
+  input: string;
+  expected_data?: unknown;
+  expected_error?: string;
+  divergence?: string;
+  ruby_class?: string;
+  ruby_xml?: string;
+}
+interface Oracle {
+  bundle: Bundle;
+  cases: OracleCase[];
+}
+const oracle = JSON.parse(readFileSync(join(FIXTURES, "oracle.json"), "utf8")) as Oracle;
+const NONE: Bindings = { types: {} };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loaded = Record<string, any>;
+
+function generateInto(bundle: Bundle, bindings: Bindings = NONE): string {
+  const dir = mkdtempSync(join(tmpdir(), "lml-xml-"));
+  created.push(dir);
+  const contractsModule = "./contracts-shim.js";
+  const files = generateModelsWith(bundle, bindings, [createXmlEmitter({ contractsModule })], { contractsModule });
+  for (const [path, text] of files) {
+    const target = join(dir, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, text);
+  }
+  copyFileSync(join(REPO, "src/contracts.ts"), join(dir, "contracts-shim.ts"));
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
+  symlinkSync(join(REPO, "node_modules"), join(dir, "node_modules"));
+  return dir;
+}
+
+function tscCheck(dir: string): void {
+  const config = {
+    compilerOptions: {
+      target: "ES2022", lib: ["ES2022"], module: "NodeNext", moduleResolution: "NodeNext", types: [],
+      strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true, noImplicitOverride: true,
+      noFallthroughCasesInSwitch: true, noUnusedLocals: true, noUnusedParameters: true,
+      verbatimModuleSyntax: true, isolatedModules: true, skipLibCheck: true, noEmit: true,
+    },
+    include: ["./*.ts", "./xml/*.ts"],
+  };
+  writeFileSync(join(dir, "tsconfig.json"), JSON.stringify(config));
+  try {
+    execFileSync(process.execPath, [join(REPO, "node_modules/typescript/bin/tsc"), "-p", join(dir, "tsconfig.json")], { encoding: "utf8", stdio: "pipe" });
+  } catch (error) {
+    const out = error as { stdout?: string; stderr?: string };
+    throw new Error(`tsc failed:\n${out.stdout ?? ""}${out.stderr ?? ""}`);
+  }
+}
+
+async function load(dir: string): Promise<Loaded> {
+  return (await import(pathToFileURL(join(dir, "index.ts")).href)) as Loaded;
+}
+
+async function infoOf(run: () => Promise<unknown> | unknown): Promise<LmlError["info"] | undefined> {
+  try {
+    await run();
+  } catch (error) {
+    const info = (error as { name?: string; info?: LmlError["info"] }).info;
+    if ((error as Error).name === "LmlError" && info !== undefined) return info;
+    throw error;
+  }
+  return undefined;
+}
+
+/** The neutral dump shared with generate.rb. */
+function dump(value: unknown): unknown {
+  if (value === null || value === undefined || typeof value === "symbol") return null;
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.length === 0 ? null : value.map(dump);
+  if (typeof value === "object" && "constructor" in value && Array.isArray((value.constructor as { memberNames?: unknown }).memberNames)) {
+    const names = (value.constructor as unknown as { memberNames: string[] }).memberNames;
+    const record = value as Record<string, unknown>;
+    // Ruby has no attribute named like a token list: it is dumped last.
+    const out: Record<string, unknown> = {};
+    for (const name of [...names.filter((n) => n !== "__lml_content"), ...names.filter((n) => n === "__lml_content")]) {
+      // An ordered-content token list stays [] when empty (Ruby does too); other empty lists dump as null.
+      const member = record[name];
+      out[name] = name === "__lml_content" && Array.isArray(member) && member.length === 0 ? [] : dump(member);
+    }
+    return out;
+  }
+  return value;
+}
+
+function reorder(expected: unknown): unknown {
+  return expected;
+}
+
+// How the TypeScript reader deliberately differs from Ruby on a case, by id.
+type Override = { error: ErrorCode; attribute?: string } | { data: unknown };
+const OVERRIDES: Record<string, Override> = {
+  // Ruby matches a prefixed attribute by local name regardless of namespace.
+  "person-prefixed-attribute-lenient": { data: { id: null, lang: null, name: null, nick: null, tags: null, addr: null, age: null, ni: null, nb: null, ee: null } },
+  // Ruby accepts any root element name or namespace; TS refuses another name or another non-empty namespace
+  // (a root with no namespace is read as in the model's namespace).
+  "person-wrong-root": { error: "invalid_document" },
+  "person-wrong-namespace": { error: "invalid_document" },
+  // Ruby's from_xml with a register (what mml uses) reads an empty mixed element as one empty text with a text token;
+  // the oracle's register-less call takes the Leptris plan fast path, which reads none. TS follows the register path.
+  "para-empty": { data: { text: [""], b: null, i: null, __lml_content: [{ kind: "text", attribute: "text", index: 0 }] } },
+  // Ruby reads an unparseable integer as nil.
+  "person-bad-integer": { error: "invalid_document", attribute: "age" },
+  // Ruby keeps the first of a repeated single-valued element; the TS reader refuses it (REVIEW-TS-1 L6).
+  "person-alias-both-first-wins": { error: "invalid_document" },
+  "person-scalar-duplicate-first-wins": { error: "invalid_document" },
+  // The recorded value predates canonical Ruby e4439b37 (probe: <name>text<![CDATA[..]]></name> reads nil there; the
+  // cdata oracle row OrdinaryElement/plain_then_cdata): an ordinary element rule holds nothing for several child nodes.
+  "person-entities-and-cdata": { data: { id: null, lang: null, name: null, nick: null, tags: null, addr: null, age: null, ni: null, nb: null, ee: null } },
+  // Ruby falls back to the declared type for an unknown discriminator value.
+  "kennel-poly-unknown-kind": { error: "unknown_discriminator" },
+  // Ruby reads the comment but its LML export refuses it in ordered content; TS keeps it as a comment token.
+  "para-comment-refused": {
+    data: {
+      text: ["a"], b: ["x"], i: null,
+      __lml_content: [{ kind: "text", attribute: "text", index: 0 }, { kind: "comment", literal: "c" }, { kind: "element", attribute: "b", index: 0 }],
+    },
+  },
+};
+
+describe("emitter output", () => {
+  it("writes only xml/{codecs,index,runtime}.ts, deterministically, with no any/eval", () => {
+    const a = xmlEmitter.emit(oracle.bundle, NONE);
+    const b = xmlEmitter.emit(structuredClone(oracle.bundle), NONE);
+    expect([...a.keys()]).toEqual(["xml/codecs.ts", "xml/index.ts", "xml/runtime.ts"]);
+    expect([...b]).toEqual([...a]);
+    const all = [...a.values()].join("\n");
+    expect(all).not.toMatch(/: any\b|<any>|\bas any\b/);
+    expect(all).not.toMatch(/\beval\(|new Function|import\(/);
+    expect(xmlEmitter.name).toBe("xml");
+  });
+
+  it("emits a reader, writer and codec for every Ruby-mapped model", () => {
+    const codecs = xmlEmitter.emit(oracle.bundle, NONE).get("xml/codecs.ts") ?? "";
+    for (const name of ["Person", "Plain", "Para", "Ord", "Kennel", "Animal", "Dog", "Addr"]) {
+      expect(codecs, name).toMatch(new RegExp(`export function read\\w*${name}\\(`));
+      expect(codecs, name).toMatch(new RegExp(`export (async )?function write\\w*${name}\\(`));
+    }
+  });
+});
+
+function refusal(edit: (draft: any) => void): () => void { // eslint-disable-line @typescript-eslint/no-explicit-any
+  return () => {
+    const draft = structuredClone(oracle.bundle) as never;
+    edit(draft);
+    xmlEmitter.emit(draft, NONE);
+  };
+}
+
+describe("generation refusals name the mapping", () => {
+  const PERSON = "XmlOracle::Person@default";
+  const cases: [string, (d: any) => void, ErrorCode][] = [ // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["unknown mapping-level key", (d) => { d.models[PERSON].mappings.xml.surprise = true; }, "unsupported_mapping"],
+    ["unknown rule-level key", (d) => { d.models[PERSON].mappings.xml.rules[0].surprise = 1; }, "unsupported_mapping"],
+    ["rule on an unknown attribute", (d) => { d.models[PERSON].mappings.xml.rules[0].to = "ghost"; }, "dangling_reference"],
+    ["render policy outside the XML set", (d) => { d.models[PERSON].mappings.xml.rules[2].render.nil = "sideways"; }, "unsupported_mapping"],
+    ["a namespace that is not one of the three modes", (d) => { d.models[PERSON].mappings.xml.rules[2].namespace = { mode: "blend" }; }, "invalid_document"],
+    ["an ordered mapping without the ordered_content member", (d) => { delete d.models["XmlOracle::Para@default"].ordered_content; }, "invalid_ordered_content"],
+    ["a collection XML attribute", (d) => { d.models[PERSON].mappings.xml.rules.find((r: any) => r.kind === "attribute").to = "tags"; }, "unsupported_mapping"], // eslint-disable-line @typescript-eslint/no-explicit-any
+  ];
+  for (const [label, edit, code] of cases) {
+    it(`refuses ${label} as ${code}`, () => {
+      try {
+        refusal(edit)();
+      } catch (error) {
+        expect(error).toBeInstanceOf(LmlError);
+        const info = (error as LmlError).info;
+        expect(info.reason).toBe(code);
+        expect(info.format).toBe("xml");
+        expect(info.model_id).toBeDefined();
+        return;
+      }
+      throw new Error("expected a refusal");
+    });
+  }
+});
+
+describe.skipIf(!available)("generated XML codecs (moxml-ts)", () => {
+  let mod: Loaded;
+  it("compiles under strict tsc and loads", { timeout: 180_000 }, async () => {
+    const dir = generateInto(oracle.bundle);
+    tscCheck(dir);
+    mod = await load(dir);
+    expect(Object.keys(mod["xml"].CODECS).sort()).toEqual(Object.keys(oracle.bundle.models).sort());
+  });
+
+  describe("Ruby oracle reads", () => {
+    for (const c of oracle.cases) {
+      it(c.id, async () => {
+        const codec = mod["xml"].CODECS[c.model_id];
+        const override = OVERRIDES[c.id];
+        if (override !== undefined ? "error" in override : c.expected_error !== undefined) {
+          const info = await infoOf(async () => dump(await codec.parse(c.input)));
+          expect(info, "expected an LmlError").toBeDefined();
+          expect(info?.format).toBe("xml");
+          expect(info?.model_id).toBeDefined();
+          if (override !== undefined && "error" in override) {
+            expect(info?.reason).toBe(override.error);
+            if (override.attribute !== undefined) {
+              expect(info?.attribute).toBe(override.attribute);
+              expect(info?.rule).toBe(override.attribute);
+              expect(info?.location).toMatch(/^\/\w+\//);
+            }
+          }
+          return;
+        }
+        const value = await codec.parse(c.input);
+        const expected = override !== undefined && "data" in override ? override.data : c.expected_data;
+        expect(reorder(dump(value))).toEqual(expected);
+        if (c.ruby_class !== undefined && override === undefined) {
+          expect(String((value.constructor as { modelId: string }).modelId).split("::").pop()?.split("@")[0]).toBe(c.ruby_class);
+        }
+      });
+    }
+  });
+
+  describe("error context", () => {
+    it("malformed input names the model, format and input location", async () => {
+      const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Person@default"].parse('<person xmlns="urn:ex"'));
+      expect(info).toMatchObject({ reason: "invalid_document", model_id: "XmlOracle::Person@default", format: "xml", location: "/input" });
+    });
+
+    for (const ref of ["&#x0;", "&#x1;", "&#xD800;", "&#1114112;", "&#xFFFE;", "&#99999999999999999999;", "&#X0;", "&#X1;", "&#XD800;"]) {
+      it(`refuses the character reference ${ref} (outside the XML Char range)`, async () => {
+        const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Plain@default"].parse(`<plain><v>a${ref}b</v></plain>`));
+        expect(info?.reason).toBe("invalid_document");
+        expect(info?.detail).toMatch(/character reference/);
+      });
+    }
+
+    it("a '<' in an attribute value cannot hide a character reference behind a comment lookalike", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Plain@default"];
+      for (const text of ['<plain id="<!--"><v>a&#0;b</v></plain><!---->', '<plain id="<!--"><v>a&#0;b</v><x y="-->"/></plain>']) {
+        const info = await infoOf(() => codec.parse(text));
+        expect(info?.reason, text).toBe("invalid_document");
+      }
+    });
+
+    it("still reads valid references and an invalid-looking one inside CDATA or a comment", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Plain@default"];
+      expect((await codec.parse("<plain><v>&#x9;&#65;&#x1F600;</v></plain>")).v).toBe("\tA\u{1F600}");
+      expect((await codec.parse("<plain><!-- &#x0; --><v><![CDATA[&#x0;]]></v></plain>")).v).toBe("&#x0;");
+    });
+
+    // N2: a reference without its ';' at the end of a text run or attribute value was decoded by the parser behind the guard.
+    for (const text of ["<plain><v>a&#0</v></plain>", "<plain><v>a&#1</v></plain>", "<plain><v>a&#x1b</v></plain>", "<plain><v>a&#xD800</v></plain>", '<plain x="a&#0"><v>b</v></plain>', "<plain><v>a&#65</v></plain>"]) {
+      it(`refuses the semicolon-less reference in ${text}`, async () => {
+        const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Plain@default"].parse(text));
+        expect(info?.reason).toBe("invalid_document");
+        expect(info?.detail).toMatch(/&#/);
+      });
+    }
+
+    // F6: an undefined entity lost its ';' and decoded to text.
+    for (const text of ["<plain><v>&nbsp;</v></plain>", "<plain><v>a&foo</v></plain>", '<plain x="&nbsp;"><v>b</v></plain>', "<plain><v>a & b</v></plain>"]) {
+      it(`refuses the undefined or bare reference in ${text}`, async () => {
+        const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Plain@default"].parse(text));
+        expect(info?.reason).toBe("invalid_document");
+        expect(info?.detail).toMatch(/not a predefined entity or a character reference/);
+      });
+    }
+
+    it("names the undefined entity with its ';'", async () => {
+      const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Plain@default"].parse("<plain><v>&nbsp;</v></plain>"));
+      expect(info?.detail).toContain("&nbsp;");
+    });
+
+    it("still reads the five predefined entities and CDATA ampersands", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Plain@default"];
+      expect((await codec.parse("<plain><v>&lt;&gt;&amp;&quot;&apos;</v></plain>")).v).toBe("<>&\"'");
+      expect((await codec.parse("<plain><v><![CDATA[a & b &nbsp;]]></v></plain>")).v).toBe("a & b &nbsp;");
+    });
+
+    // N9: "<!-->" is an opener plus ">", not a complete comment; the guard now agrees with the parser about where the comment ends.
+    it("does not treat <!--> as a complete comment", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Plain@default"];
+      const info = await infoOf(() => codec.parse("<plain><!--><v>z</v></plain>"));
+      expect(info?.reason).toBe("invalid_document");
+      // The comment really runs to the later "-->": a reference inside it is not read, the element after it is.
+      expect((await codec.parse("<plain><!--><v>&#0;</v>--><v>z</v></plain>")).v).toBe("z");
+    });
+
+    // N4: moxml-ts a78091f refuses >255 attributes before the wasm engine (a byte counts them) and keeps the engine usable.
+    it("refuses an element with 256 attributes, decodes 255 exactly, and the next parse still works", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Plain@default"];
+      const attrs = (n: number): string => Array.from({ length: n }, (_, i) => ` a${i}="1"`).join("");
+      const info = await infoOf(() => codec.parse(`<plain${attrs(256)}><v>x</v></plain>`));
+      expect(info?.reason).toBe("invalid_document");
+      expect(info?.detail).toMatch(/more than 255 attributes/);
+      expect(info?.location).toBe("/input");
+      expect((await codec.parse(`<plain${attrs(255)}><v>x</v></plain>`)).v).toBe("x");
+      expect((await codec.parse(`<plain${attrs(50000)}><v>x</v></plain>`).catch((e: { info?: { reason: string } }) => e.info?.reason))).toBe("invalid_document");
+      expect((await codec.parse("<plain><v>after</v></plain>")).v).toBe("after");
+    });
+
+    it("refuses a DOCTYPE before the parser sees it", async () => {
+      const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Plain@default"].parse('<!DOCTYPE plain [<!ENTITY e "x">]><plain/>'));
+      expect(info?.reason).toBe("invalid_document");
+      expect(info?.detail).toMatch(/DOCTYPE/);
+    });
+
+    it("a nested failure carries the nested model and its path", async () => {
+      const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Kennel@default"].parse('<kennel><pet kind="cat"><name>T</name></pet></kennel>'));
+      expect(info).toMatchObject({ reason: "unknown_discriminator", model_id: "XmlOracle::Kennel@default", location: "/kennel/pet[0]/@kind" });
+    });
+
+    it("the wrong root names expected and found", async () => {
+      const info = await infoOf(() => mod["xml"].CODECS["XmlOracle::Person@default"].parse("<other/>"));
+      expect(info?.detail).toMatch(/expected root element person.*found other/);
+    });
+  });
+
+  describe("writers", () => {
+    it("write a Ruby-read value and read it back identically (every oracle case)", async () => {
+      let checked = 0;
+      for (const c of oracle.cases) {
+        if (c.expected_data === undefined || OVERRIDES[c.id] !== undefined) continue;
+        const codec = mod["xml"].CODECS[c.model_id];
+        const value = await codec.parse(c.input);
+        const text: string = await codec.stringify(value);
+        // as_nil / as_blank write an empty element for a nil member, which reads back as "";
+        // an empty-string member under the default empty policy is omitted and reads back as nil (as in Ruby's own to_xml).
+        const expected = structuredClone(c.expected_data) as Record<string, unknown>;
+        if (c.model_id === "XmlOracle::Person@default") {
+          for (const member of ["id", "lang"]) if (expected[member] === "") expected[member] = null; // empty attribute is omitted
+          for (const member of ["ni", "nb"]) expected[member] = expected[member] === null ? "" : null;
+        }
+        expect(dump(await codec.parse(text)), `${c.id}: ${text}`).toEqual(expected);
+        checked += 1;
+      }
+      expect(checked).toBeGreaterThanOrEqual(21); // para-empty moved to OVERRIDES; its round trip is in the 07c block below
+    });
+
+    it("emits namespaces by prefix and by default declaration", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Person@default"];
+      const value = await codec.parse('<person xmlns="urn:ex" id="1"><name>N</name><addr xmlns="urn:addr"><city>C</city></addr></person>');
+      const text: string = await codec.stringify(value);
+      expect(text).toContain('xmlns:ex="urn:ex"');
+      expect(text).toContain("<ex:name>N</ex:name>");
+      expect(text).toContain('xmlns:ad="urn:addr"');
+      expect(text).toContain("<ad:addr");
+    });
+
+    it("applies nil and empty policies like Ruby for an absent and an empty member", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Person@default"];
+      const value = await codec.parse('<person xmlns="urn:ex"><ee/></person>');
+      const text: string = await codec.stringify(value);
+      expect(text).toContain("<ex:ni");
+      expect(text).toContain('nil="true"');
+      expect(text).toMatch(/<ex:nb\b[^>]*\/>/);
+      expect(text).toMatch(/<ex:ee\b[^>]*\/>/);
+      expect(text).not.toContain("<ex:age");
+    });
+
+    it("writes mixed content in token order, never regrouped", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Para@default"];
+      const text: string = await codec.stringify(await codec.parse("<p>a<b>x</b>c<i>y</i>d<b>z</b></p>"));
+      expect(text).toBe("<p>a<b>x</b>c<i>y</i>d<b>z</b></p>");
+    });
+
+    it("writes element-only ordered content in token order", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Ord@default"];
+      const text: string = await codec.stringify(await codec.parse("<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>"));
+      expect(text).toBe("<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>");
+    });
+
+    it("writes a parsed CDATA token back as a CDATA section (never dropped, never escaped text)", async () => {
+      const codec = mod["xml"].CODECS["XmlOracle::Para@default"];
+      const out = await codec.stringify(await codec.parse("<p>a<![CDATA[raw<&>]]></p>"));
+      expect(out).toBe("<p>a<![CDATA[raw<&>]]></p>");
+    });
+  });
+});
+
+describe.skipIf(!available)("hand-written bundles: rule namespaces the Ruby DSL cannot declare", () => {
+  const model = (xml: unknown, attributes: unknown[]): Bundle => ({
+    lml_bundle: 1,
+    roots: ["Doc@default"],
+    models: {
+      "Doc@default": { lml: 2, model: "Doc", register: "default", attributes, mappings: { xml } },
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  });
+  const str = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  const element = (name: string, to: string, namespace: unknown, extra: object = {}): unknown =>
+    ({ kind: "element", name: [name], to, namespace, ...extra });
+
+  it("honours uri, unqualified and inherit element rules and attribute namespaces", { timeout: 180_000 }, async () => {
+    const bundle = model(
+      {
+        root: { element: "doc" },
+        namespace: { mode: "uri", uri: "urn:doc", prefix: "d" },
+        rules: [
+          element("a", "a", { mode: "inherit" }),
+          element("b", "b", { mode: "uri", uri: "urn:b", prefix: "bb" }),
+          element("c", "c", { mode: "unqualified" }),
+          { kind: "attribute", name: ["x"], to: "x", namespace: { mode: "uri", uri: "urn:attr", prefix: "at" } },
+          { kind: "attribute", name: ["y"], to: "y", namespace: { mode: "inherit" } },
+        ],
+      },
+      [str("a"), str("b"), str("c"), str("x"), str("y")],
+    );
+    const dir = generateInto(bundle);
+    tscCheck(dir);
+    const codec = (await load(dir))["xml"].CODECS["Doc@default"];
+    const xml =
+      '<d:doc xmlns:d="urn:doc" xmlns:at="urn:attr" xmlns:o="urn:other" at:x="X" y="Y">' +
+      '<d:a>A</d:a><bb:b xmlns:bb="urn:b">B</bb:b><c>C</c></d:doc>';
+    expect(dump(await codec.parse(xml))).toEqual({ a: "A", b: "B", c: "C", x: "X", y: "Y" });
+    // Wrong namespaces never match: b in the wrong URI, c qualified, x unqualified, y namespaced.
+    const wrong =
+      '<d:doc xmlns:d="urn:doc" xmlns:at="urn:attr" x="no" at:y="no"><d:b>no</d:b><d:c>no</d:c></d:doc>';
+    expect(dump(await codec.parse(wrong))).toEqual({ a: null, b: null, c: null, x: null, y: null });
+    // Round trip through the writer keeps every namespace.
+    const written: string = await codec.stringify(await codec.parse(xml));
+    expect(written).toContain('xmlns:bb="urn:b"');
+    expect(written).toContain("at:x=");
+    expect(dump(await codec.parse(written))).toEqual({ a: "A", b: "B", c: "C", x: "X", y: "Y" });
+  });
+
+  it("resolves a QName value through the in-scope prefix bindings", { timeout: 180_000 }, async () => {
+    const bundle = model(
+      { root: { element: "doc" }, rules: [element("q", "q", { mode: "inherit" })] },
+      [{ name: "q", type: { kind: "builtin", name: "qname" }, required: false, collection: false, default: { present: false }, initialize_empty: false }],
+    );
+    const codec = (await load(generateInto(bundle)))["xml"].CODECS["Doc@default"];
+    const value = await codec.parse('<doc xmlns:p="urn:p"><q>p:thing</q></doc>');
+    expect(value.q).toEqual({ namespace: "urn:p", local: "thing" });
+    const bad = await infoOf(() => codec.parse("<doc><q>zz:thing</q></doc>"));
+    expect(bad).toMatchObject({ reason: "invalid_document", attribute: "q", rule: "q" });
+  });
+
+  it("refuses a hash-typed rule and an unprefixed namespaced attribute writer", { timeout: 180_000 }, async () => {
+    const hash = model(
+      { root: { element: "doc" }, rules: [element("h", "h", { mode: "inherit" })] },
+      [{ name: "h", type: { kind: "builtin", name: "hash" }, required: false, collection: false, default: { present: false }, initialize_empty: false }],
+    );
+    expect(() => xmlEmitter.emit(hash, NONE)).toThrow(/hash values have no XML text form/);
+    const noPrefix = model(
+      { root: { element: "doc" }, rules: [{ kind: "attribute", name: ["x"], to: "x", namespace: { mode: "uri", uri: "urn:attr" } }] },
+      [str("x")],
+    );
+    const codec = (await load(generateInto(noPrefix)))["xml"].CODECS["Doc@default"];
+    const value = await codec.parse('<doc xmlns:q="urn:attr" q:x="1"/>');
+    expect(value.x).toBe("1");
+    const info = await infoOf(() => codec.stringify(value));
+    expect(info).toMatchObject({ reason: "unsupported_mapping", format: "xml" });
+    expect(info?.detail).toMatch(/declares no prefix/);
+  });
+});
+
+describe.skipIf(!available)("namespace-less root and empty ordered text (mml pilot 07c)", () => {
+  const attr = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  const many = { min: 0, max: null };
+  const bundle = (prefix: string | undefined): Bundle => ({
+    lml_bundle: 1,
+    roots: ["Doc@default", "Tok@default", "Blk@default"],
+    models: {
+      "Doc@default": {
+        lml: 2, model: "Doc", register: "default",
+        attributes: [attr("x")],
+        mappings: { xml: {
+          root: { element: "d" },
+          namespace: prefix === undefined ? { mode: "uri", uri: "urn:d" } : { mode: "uri", uri: "urn:d", prefix },
+          rules: [{ kind: "element", name: ["x"], to: "x", namespace: { mode: "inherit" } }],
+        } },
+      },
+      // Mirrors a mixed mml leaf (mi, mo, mtext): text content collection plus one child element.
+      "Tok@default": {
+        lml: 2, model: "Tok", register: "default",
+        attributes: [attr("value", { collection: many }), attr("e", { collection: many })],
+        mappings: { xml: {
+          root: { element: "t", mixed: true }, ordered: true, mixed_content: true,
+          rules: [
+            { kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } },
+            { kind: "content", to: "value" },
+          ],
+          namespace: { mode: "inherit" },
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+      // Mirrors a mixed ordered mml container with no content rule (set, list, semantics): element rule only.
+      "Blk@default": {
+        lml: 2, model: "Blk", register: "default",
+        attributes: [attr("e", { collection: many })],
+        mappings: { xml: {
+          root: { element: "b", mixed: true }, ordered: true, mixed_content: true,
+          rules: [{ kind: "element", name: ["e"], to: "e", namespace: { mode: "inherit" } }],
+          namespace: { mode: "inherit" },
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  });
+  const text = (index: number) => ({ kind: "text", attribute: "value", index });
+  const element = { kind: "element", attribute: "e", index: 0 };
+
+  it("a namespaced model accepts a root with no namespace and refuses a different namespace", { timeout: 180_000 }, async () => {
+    const dflt = (await load(generateInto(bundle(undefined))))["xml"].CODECS["Doc@default"];
+    // unqualified root and unqualified descendants read as if the default namespace applied
+    expect(dump(await dflt.parse("<d><x>1</x></d>"))).toEqual({ x: "1" });
+    expect(dump(await dflt.parse('<d xmlns="urn:d"><x>2</x></d>'))).toEqual({ x: "2" });
+    // a different non-empty namespace is still refused
+    const other = await infoOf(() => dflt.parse('<d xmlns="urn:other"><x>3</x></d>'));
+    expect(other).toMatchObject({ reason: "invalid_document", model_id: "Doc@default" });
+    expect(other?.detail).toMatch(/expected root element d in urn:d.*found d in urn:other/);
+    expect((await infoOf(() => dflt.parse("<e/>")))?.detail).toMatch(/expected root element d/);
+    // a mapping that names a preferred prefix (mml declares "mml") reads the same documents
+    const prefixed = (await load(generateInto(bundle("p"))))["xml"].CODECS["Doc@default"];
+    expect(dump(await prefixed.parse("<d><x>1</x></d>"))).toEqual({ x: "1" });
+    expect(dump(await prefixed.parse('<p:d xmlns:p="urn:d"><p:x>4</p:x></p:d>'))).toEqual({ x: "4" });
+    expect((await infoOf(() => prefixed.parse('<d xmlns="urn:other"/>')))?.reason).toBe("invalid_document");
+  });
+
+  it("an empty or whitespace-only element reads the text tokens Ruby captures", { timeout: 180_000 }, async () => {
+    const codec = (await load(generateInto(bundle(undefined))))["xml"].CODECS["Tok@default"];
+    const read = async (xml: string) => dump(await codec.parse(xml)) as { value: unknown; e: unknown; __lml_content: unknown };
+    for (const xml of ["<t/>", "<t></t>"]) {
+      const v = await read(xml);
+      expect([v.value, v.__lml_content], xml).toEqual([[""], [text(0)]]);
+    }
+    const blank = await read("<t> </t>");
+    expect([blank.value, blank.__lml_content]).toEqual([[" "], [text(0)]]);
+    const child = await read("<t><e>a</e></t>");
+    // an element child alone adds no text (Ruby: tokens [element], value empty)
+    expect([child.value, child.__lml_content]).toEqual([null, [element]]);
+    const spaced = await read("<t> <e>a</e> </t>");
+    expect([spaced.value, spaced.__lml_content]).toEqual([[" ", " "], [text(0), element, text(1)]]);
+    // the empty text survives a write and a re-read
+    const back = dump(await codec.parse(await codec.stringify(await codec.parse("<t/>")))) as { value: unknown; __lml_content: unknown };
+    expect([back.value, back.__lml_content]).toEqual([[""], [text(0)]]);
+    const plain = await read("<t>x<e>a</e>y</t>");
+    expect([plain.value, plain.__lml_content]).toEqual([["x", "y"], [text(0), element, text(1)]]);
+  });
+});
+
+describe.skipIf(!available)("comments, processing instructions and attribute order in ordered content", () => {
+  const attr = (name: string): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false,
+  });
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["Mk@default"],
+    models: {
+      "Mk@default": {
+        lml: 2, model: "Mk", register: "default",
+        attributes: [attr("c"), attr("x"), attr("y")],
+        mappings: { xml: {
+          root: { element: "m" }, ordered: true,
+          rules: [
+            { kind: "element", name: ["c"], to: "c" },
+            { kind: "attribute", name: ["x"], to: "x" },
+            { kind: "attribute", name: ["y"], to: "y" },
+          ],
+        } },
+        ordered_content: { member: "__lml_content", version: 1 },
+      },
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  let mod: Loaded;
+  const ready = async (): Promise<Loaded> => (mod ??= (await load(generateInto(bundle)))["xml"]);
+  const element = { kind: "element", attribute: "c", index: 0 };
+  const attribute = (name: string) => ({ kind: "attribute", attribute: name, index: 0 });
+
+  it("keeps input attribute order and writes it back", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const reversed = await codec.parse('<m y="2" x="1"><c>t</c></m>');
+    expect(dump(reversed)).toEqual({ c: "t", x: "1", y: "2", __lml_content: [attribute("y"), attribute("x"), element] });
+    expect(await codec.stringify(reversed)).toMatch(/<m y="2" x="1"><c>t<\/c><\/m>/);
+    // declaration order needs no attribute token
+    const declared = await codec.parse('<m x="1" y="2"><c>t</c></m>');
+    expect(dump(declared)).toEqual({ c: "t", x: "1", y: "2", __lml_content: [element] });
+    expect(await codec.stringify(declared)).toMatch(/<m x="1" y="2"><c>t<\/c><\/m>/);
+    // a partial token list puts the named attribute first
+    const Mk = reversed.constructor as new (init: object) => object;
+    const partial = new Mk({ c: "t", x: "1", y: "2", __lml_content: [attribute("y"), element] });
+    expect(await codec.stringify(partial)).toMatch(/<m y="2" x="1">/);
+    // a value built without tokens writes declaration order
+    expect(await codec.stringify(new Mk({ c: "t", x: "1", y: "2" }))).toMatch(/<m x="1" y="2"><c>t<\/c><\/m>/);
+    // an attribute token for an element member is refused by the writer
+    const wrong = new Mk({ c: "t", x: "1", y: "2", __lml_content: [attribute("c"), element] });
+    expect((await infoOf(() => codec.stringify(wrong)))?.reason).toBe("invalid_document");
+  });
+
+  it("refuses an attribute token with a non-zero index", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const Mk = (await codec.parse("<m/>")).constructor as new (init: object) => object;
+    expect(() => new Mk({ x: "1", __lml_content: [{ kind: "attribute", attribute: "x", index: 1 }] })).toThrow();
+  });
+
+  it("reads and writes comments and processing instructions as tokens, in input order", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const value = await codec.parse("<m><!--note--><c>t</c><?pi some data?></m>");
+    expect(dump(value)).toEqual({
+      c: "t", x: null, y: null,
+      __lml_content: [{ kind: "comment", literal: "note" }, element, { kind: "processing_instruction", target: "pi", data: "some data" }],
+    });
+    expect(await codec.stringify(value)).toBe("<m><!--note--><c>t</c><?pi some data?></m>");
+  });
+
+  it("refuses a comment or processing-instruction token the XML grammar cannot carry", { timeout: 180_000 }, async () => {
+    const codec = (await ready()).CODECS["Mk@default"];
+    const Mk = (await codec.parse("<m/>")).constructor as new (init: object) => object;
+    for (const token of [
+      { kind: "comment", literal: "a--b" },
+      { kind: "processing_instruction", target: "xml", data: "" },
+      { kind: "processing_instruction", target: "p", data: "a?>b" },
+    ]) {
+      const out = await infoOf(() => codec.stringify(new Mk({ c: null, x: null, y: null, __lml_content: [token] })));
+      expect(out?.reason).toBe("not_serializable");
+    }
+  });
+});
+
+describe.skipIf(!available)("single-child text and whitespace-only literal tokens (mml pilot F2, Ruby mml 2.4.7 measurements)", () => {
+  const attr = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  const many = { min: 0, max: null };
+  const rule = (name: string) => ({ kind: "element", name: [name], to: name, namespace: { mode: "inherit" } });
+  const model = (id: string, root: object, extra: object, attributes: unknown[], rules: unknown[]) => ({
+    lml: 2, model: id, register: "default", attributes,
+    mappings: { xml: { root, ...extra, rules, namespace: { mode: "inherit" } } },
+    ordered_content: { member: "__lml_content", version: 1 },
+  });
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["Tok@default", "Blk@default", "Att@default", "Txt@default"],
+    models: {
+      "Txt@default": {
+        lml: 2, model: "Txt", register: "default", attributes: [attr("value")],
+        mappings: { xml: { root: { element: "x" }, namespace: { mode: "inherit" }, rules: [{ kind: "content", to: "value" }] } },
+      },
+      "Att@default": {
+        lml: 2, model: "Att", register: "default", attributes: [attr("x"), attr("y"), attr("t")],
+        mappings: { xml: { root: { element: "a" }, namespace: { mode: "inherit" }, rules: [
+          { kind: "attribute", name: ["x"], to: "x", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "attribute", name: ["y"], to: "y", namespace: { mode: "inherit" }, render: { nil: "omit", empty: "omit", default: false } },
+          { kind: "element", name: ["t"], to: "t", namespace: { mode: "inherit" } },
+        ] } },
+      },
+      "Tok@default": model("Tok", { element: "t", mixed: true }, { ordered: true, mixed_content: true },
+        [attr("value", { collection: many }), attr("e", { collection: many })], [rule("e"), { kind: "content", to: "value" }]),
+      "Blk@default": model("Blk", { element: "b", mixed: true }, { ordered: true, mixed_content: true }, [attr("e", { collection: many })], [rule("e")]),
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  const text = (index: number) => ({ kind: "text", attribute: "value", index });
+  let codecs: Record<string, { parse(t: string): Promise<unknown>; stringify(v: unknown): Promise<string> }>;
+  const codec = async (id: string) => (codecs ??= (await load(generateInto(bundle)))["xml"].CODECS as never)[id] as NonNullable<typeof codecs>[string];
+
+  // Ruby: XmlElement#text joins the text children into one string when the element has at most one child node, so a
+  // lone child element (mapped to a model or unmapped, with or without text of its own) leaves one empty text value;
+  // two or more children give the array of the real text nodes. Cases: mml3 mmlcore crashtests/mozilla/412237-1.mml
+  // (<ms><mfrac/></ms>) and children-with-negative-block-sizes.math0.mml (<mi><span/></mi>), measured with ruby_oracle.rb.
+  it("reads one empty text for a lone unmapped child element and none for two", { timeout: 180_000 }, async () => {
+    const c = await codec("Tok@default");
+    const read = async (xml: string) => dump(await c.parse(xml)) as { value: unknown; __lml_content: unknown };
+    for (const xml of ["<t><span/></t>", "<t><span>x</span></t>", "<t><span><b/></span></t>"]) {
+      const v = await read(xml);
+      expect([v.value, v.__lml_content], xml).toEqual([[""], [text(0)]]);
+    }
+    const two = await read("<t><span/><span/></t>");
+    expect([two.value, two.__lml_content]).toEqual([null, []]);
+    const spaced = await read("<t><span/> </t>");
+    expect([spaced.value, spaced.__lml_content]).toEqual([[" "], [text(0)]]); // preserved: a real text node
+  });
+
+  it("keeps single-valued content as a string across unmapped children", { timeout: 180_000 }, async () => {
+    const txt = await codec("Txt@default");
+    const read = async (xml: string) => (dump(await txt.parse(xml)) as { value: unknown }).value;
+    expect(await read("<x>ab</x>")).toBe("ab");
+    expect(await read("<x><span/></x>")).toBe("");
+    expect(await read("<x>a<span/>b</x>")).toBe("ab");
+    expect(await read("<x>a<span/></x>")).toBe("a");
+    expect(await read("<x>\n <span/>\n </x>")).toBe("\n \n ");
+    expect(await read(await txt.stringify(await txt.parse("<x>a<span/>b</x>")))).toBe("ab");
+  });
+
+  // Valid XML keeps a whitespace character written as a character reference in an attribute value (&#10; stays LF);
+  // only literal whitespace is normalized. The moxml-ts pin a78091f (leptris-wasm 1.6.5) dropped TAB and LF when
+  // serializing, so the writer refused them; the pin at 77d01eb (leptris-wasm 1.9.0) writes &#9; &#10; &#13; as Ruby does.
+  // Cases: mmlcore relations/css-styling/{border,margin,padding}-001.*.mml (style="...;&#10; ...") and lengths-2.math1.mml.
+  it("round-trips TAB, LF and CR in attribute values with quotes, ampersands and Unicode", { timeout: 180_000 }, async () => {
+    const att = await codec("Att@default");
+    const bare = (x: string) => x.replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    const read = async (xml: string) => dump(await att.parse(xml)) as { x: string; y: string };
+    const value = await read('<a x="p&#10;q&#9;r&#13;s" y="lit\neral\ttab"/>');
+    expect(value.x).toBe("p\nq\tr\rs"); // character references are kept by the parser
+    expect(value.y).toBe("lit eral tab"); // literal whitespace is normalized to spaces
+    const input = '<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>';
+    const out = bare(await att.stringify(await att.parse(input)));
+    expect(out).toBe('<a x="p&#10;q&#9;r&#13;s" y="&quot;a&quot; &amp; &lt;b&gt; é😀&#10;"><t>a\nb</t></a>'); // text keeps its raw LF
+    expect(await read(out)).toMatchObject({ x: "p\nq\tr\rs", y: '"a" & <b> é😀\n' });
+    // preserved: ordinary attributes are written unchanged
+    expect(bare(await att.stringify(await att.parse('<a x="plain" y="a b"/>')))).toBe('<a x="plain" y="a b"/>');
+  });
+
+  // Ruby (ordered_applier / instance_methods): a whitespace-only literal text token is skipped unless the model maps
+  // content; a mapped text value and non-ASCII whitespace (U+00A0, String#strip keeps it) are kept.
+  it("drops whitespace-only literal tokens of a mixed model without a content rule, and keeps them elsewhere", { timeout: 180_000 }, async () => {
+    const blk = await codec("Blk@default");
+    const out = async (xml: string) => (await blk.stringify(await blk.parse(xml))).replace(/ xmlns(:\w+)?="[^"]*"/g, "");
+    expect(await out("<b> <e>x</e> </b>")).toBe("<b><e>x</e></b>");
+    expect(await out("<b>  </b>")).toBe("<b/>");
+    expect(await out("<b>\n\t</b>")).toBe("<b/>");
+    expect(await out("<b>&#xA0;</b>")).toBe("<b>\u00a0</b>");
+    expect(await out("<b> y <e>x</e></b>")).toBe("<b> y <e>x</e></b>");
+    const tok = await codec("Tok@default");
+    expect((await tok.stringify(await tok.parse("<t> </t>"))).replace(/ xmlns(:\w+)?="[^"]*"/g, "")).toBe("<t> </t>");
+    // the data still records the literal token (Ruby's capture does)
+    expect((dump(await blk.parse("<b> </b>")) as { __lml_content: unknown }).__lml_content).toEqual([{ kind: "text", literal: " " }]);
+  });
+});
+
+describe.skipIf(!available)("reader limits and strictness (REVIEW-TS-1 H1, L6)", () => {
+  const attr = (name: string, extra: object = {}): unknown => ({
+    name, type: { kind: "builtin", name: "string" }, required: false, collection: false,
+    default: { present: false }, initialize_empty: false, ...extra,
+  });
+  // N: a recursive node whose children are N elements, with text, an attribute `u` and a singleton `t`.
+  const bundle: Bundle = {
+    lml_bundle: 1,
+    roots: ["N@default"],
+    models: {
+      "N@default": {
+        lml: 2, model: "N", register: "default",
+        attributes: [
+          attr("kids", { type: { kind: "model", id: "N@default" }, collection: { min: 0, max: null } }),
+          attr("text"), attr("u"), attr("t"),
+        ],
+        mappings: { xml: { root: { element: "n" }, rules: [
+          { kind: "element", name: ["n"], to: "kids" },
+          { kind: "element", name: ["t"], to: "t" },
+          { kind: "attribute", name: ["u"], to: "u" },
+          { kind: "content", to: "text" },
+        ] } },
+      },
+    } as never,
+    value_types: {},
+    capabilities: ["xml"],
+  };
+  let codec: Loaded;
+  const ready = async (): Promise<Loaded> => (codec ??= (await load(generateInto(bundle)))["xml"].CODECS["N@default"]);
+
+  // Before the fix 10,000 siblings took 6.0 s and 40,000 over a minute (moxml-ts
+  // namespaceUri()/attributes() are O(siblings)); the limit refuses before any of it.
+  it("refuses 40,000 sibling children by max_children, well under a second", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    const text = "<n>" + "<n/>".repeat(40_000) + "</n>";
+    const started = performance.now();
+    const info = await infoOf(() => c.parse(text));
+    const elapsed = performance.now() - started;
+    expect(info).toMatchObject({ reason: "invalid_document", rule: "max_children", format: "xml" });
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("decodes a wide element within the default limit in bounded time", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    const started = performance.now();
+    const value = await c.parse("<n>" + "<n/>".repeat(1000) + "</n>");
+    const elapsed = performance.now() - started;
+    expect(value.kids).toHaveLength(1000);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("limits are options: a raised max_children admits what the default refuses", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    const text = "<n>" + "<n/>".repeat(60) + "</n>";
+    expect((await infoOf(() => c.parse(text, { limits: { maxChildren: 50 } })))?.rule).toBe("max_children");
+    expect((await c.parse(text, { limits: { maxChildren: 60 } })).kids).toHaveLength(60);
+  });
+
+  it("refuses more elements than max_elements and more CDATA nodes than max_cdata_nodes", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    const tree = "<n>" + "<n><n/><n/></n>".repeat(5) + "</n>";
+    expect((await infoOf(() => c.parse(tree, { limits: { maxElements: 10 } })))).toMatchObject({ reason: "invalid_document", rule: "max_elements" });
+    expect((await c.parse(tree, { limits: { maxElements: 100 } })).kids).toHaveLength(5);
+    const cdata = "<n>" + "<![CDATA[a]]>".repeat(20) + "</n>";
+    expect((await infoOf(() => c.parse(cdata, { limits: { maxCdata: 10 } })))).toMatchObject({ reason: "invalid_document", rule: "max_cdata_nodes" });
+    // admitted by the raised limit; an ordinary content rule ignores CDATA (canonical Ruby), so the value is empty
+    expect((await c.parse(cdata, { limits: { maxCdata: 20 } })).text).toBe("");
+  });
+
+  it("a wide CDATA run is refused by default, not read at quadratic cost", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    const started = performance.now();
+    const info = await infoOf(() => c.parse("<n>" + ("<n>" + "<![CDATA[a]]>".repeat(800) + "</n>").repeat(3) + "</n>"));
+    expect(info?.rule).toBe("max_cdata_nodes");
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses a repeated single-valued element by name", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    expect((await c.parse("<n><t>a</t></n>")).t).toBe("a");
+    const info = await infoOf(() => c.parse("<n><t>a</t><t>b</t></n>"));
+    expect(info).toMatchObject({ reason: "invalid_document", attribute: "t", rule: "t" });
+    expect(info?.detail).toMatch(/element t occurs more than once/);
+  });
+
+  it("refuses a repeated attribute by name (text parse)", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    expect((await c.parse('<n u="1"/>')).u).toBe("1");
+    expect((await c.parse("<n t='a>b' u='1'>x</n>")).u).toBe("1");
+    const info = await infoOf(() => c.parse('<n u="1" u="2"/>'));
+    expect(info).toMatchObject({ reason: "invalid_document", location: "/input" });
+    expect(info?.detail).toMatch(/attribute u is repeated/);
+    // The same name inside a comment, CDATA or another element's value is not a repeat.
+    expect((await c.parse('<n u="1"><!-- <x a="1" a="2"/> --><![CDATA[<x a="1" a="2"/>]]></n>')).u).toBe("1");
+  });
+
+  it("refuses an unbound element or attribute prefix", { timeout: 180_000 }, async () => {
+    const c = await ready();
+    expect(await infoOf(() => c.parse("<q:n/>"))).toMatchObject({ reason: "invalid_document", location: "/n" });
+    expect((await infoOf(() => c.parse("<q:n/>")))?.detail).toMatch(/prefix q is not bound/);
+    expect((await infoOf(() => c.parse('<n a:u="1"/>')))?.detail).toMatch(/prefix a is not bound/);
+  });
+});
+
+describe.skipIf(!available)("native OMML flat XML sequence", () => {
+  it("preserves occurrence order and validates native read state explicitly", { timeout: 30_000 }, async () => {
+    const paths = join(REPO, "test/lml/fixtures");
+    const bundle = JSON.parse(readFileSync(join(paths, "pos-h-bundle.json"), "utf8")) as Bundle;
+    const corpus = JSON.parse(readFileSync(join(paths, "pos-h-corpus.json"), "utf8")) as {
+      rows: { id: string; input: string; expected: string; values: { align: string[]; pos_offset: string[] }; valid: boolean }[];
+      refusals: { input: string }[];
+    };
+    const mod = await load(generateInto(bundle));
+    const codec = mod["xml"].CODECS["Omml::Models::CTPosH@omml"];
+    for (const row of corpus.rows) {
+      const value = await codec.parse(row.input);
+      expect(value.align, row.id).toEqual(row.values.align);
+      expect(value.pos_offset.map(String), row.id).toEqual(row.values.pos_offset);
+      expect(value.constructor.validate(value).length === 0, row.id).toBe(row.valid);
+      const actual = stripWs(await canonicalTree(await codec.stringify(value)));
+      expect(stable(actual), row.id).toBe(stable(stripWs(await canonicalTree(row.expected))));
+    }
+    for (const row of corpus.refusals) await expect(codec.parse(row.input)).rejects.toThrow();
+  });
+});
+
+describe.skipIf(!available)("ordered XML sequence with standalone rules", () => {
+  it("reads imported sequence members and writes them in token order", { timeout: 30_000 }, async () => {
+    const id = "XmlOracle::Ord@default";
+    const source = oracle.bundle.models[id]!;
+    const xml = source.mappings.xml!;
+    const [first, ...imported] = xml.rules;
+    const mapping = { ...xml, rules: [first!], sequence: [{ kind: "sequence", members: imported }] };
+    const bundle = {
+      ...oracle.bundle,
+      roots: [id],
+      models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } },
+    };
+    const loaded = await load(generateInto(bundle));
+    const codec = loaded["xml"].CODECS[id];
+    const document = "<ord><c>1</c><a>2</a><c>3</c><a>4</a></ord>";
+    expect(await codec.stringify(await codec.parse(document))).toBe(document);
+  });
+});
+
+describe.skipIf(!available)("unordered XML sequence with standalone rules", () => {
+  const bundle = JSON.parse(readFileSync(join(REPO, "test/lml/fixtures/pos-h-bundle.json"), "utf8")) as Bundle;
+  const id = "Omml::Models::CTPosH@omml";
+  const source = bundle.models[id]!;
+  const xml = source.mappings.xml!;
+  const codecWith = async (keep: (to: string) => boolean) => {
+    const mapping = { ...xml, rules: xml.rules.filter((rule) => rule.kind !== "element" || keep(rule.to ?? "")) };
+    const changed = { ...bundle, models: { [id]: { ...source, mappings: { ...source.mappings, xml: mapping } } } };
+    return (await load(generateInto(changed)))["xml"].CODECS[id];
+  };
+  const input = '<m:CT_PosH xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:posOffset>10</m:posOffset></m:CT_PosH>';
+
+  it("writes imported members when the sequence fixes the write order", { timeout: 30_000 }, async () => {
+    // Rules [align] then imported [posOffset] is the sequence order [align, posOffset].
+    const codec = await codecWith((to) => to !== "pos_offset");
+    const parsed = await codec.parse(input);
+    expect(parsed.pos_offset).toEqual([10n]);
+    expect(await codec.stringify(parsed)).toBe(input);
+  });
+
+  it("reads imported members and refuses the undetermined write order", { timeout: 30_000 }, async () => {
+    // Rules [posOffset] then imported [align] is not the sequence order [align, posOffset].
+    const codec = await codecWith((to) => to !== "align");
+    const parsed = await codec.parse(input);
+    expect(parsed.pos_offset).toEqual([10n]);
+    expect(await infoOf(() => codec.stringify(parsed))).toMatchObject({ reason: "unsupported_mapping", model_id: id });
+  });
+});

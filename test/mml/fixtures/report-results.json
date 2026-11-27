@@ -1,0 +1,15 @@
+{
+  "mml_version": "2.4.7",
+  "suite": "all",
+  "files": 5,
+  "hasNs": 3,
+  "results": [
+    {"suite":"mml2-testsuite","version":"3","variant":"as-is","file":"mml2-testsuite/a.mml","outcome":"pass","cls":"pass","checks":{"treeExact":false,"treeWs":true,"dataExact":false,"dataNorm":true,"bytes":false}},
+    {"suite":"mml2-testsuite","version":"3","variant":"ns-injected","file":"mml2-testsuite/a.mml","outcome":"pass","cls":"pass","checks":{"treeExact":true,"treeWs":true,"dataExact":true,"dataNorm":true,"bytes":true}},
+    {"suite":"mml3-testsuite","version":"3","variant":"as-is","file":"mml3-testsuite/b.mml","outcome":"refused","cls":"refused: doctype"},
+    {"suite":"mmlcore-testsuite","version":"4","variant":"as-is","file":"mmlcore-testsuite/c.mml","outcome":"both_refuse","cls":"ruby refuses | ts refuses"},
+    {"suite":"mmlcore-testsuite","version":"4","variant":"as-is","file":"mmlcore-testsuite/d.mml","outcome":"mismatch","cls":"different tree","detail":"/children/0: ruby=mi ts=mo","checks":{"treeExact":false,"treeWs":false,"dataExact":true,"dataNorm":true,"bytes":false}},
+    {"suite":"mmlcore-testsuite","version":"4","variant":"ns-injected","file":"mmlcore-testsuite/d.mml","outcome":"mismatch","cls":"ts write/compare failed"},
+    {"suite":"mml2-testsuite","version":"3","variant":"as-is","file":"mml2-testsuite/e.mml","outcome":"refused_by_ts_only","cls":"refused: malformed XML"}
+  ]
+}
